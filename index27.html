@@ -232,6 +232,7 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
     }
 }
 </script>
+<script src="https://cdn.jsdelivr.net/npm/clipper-lib@6.4.2/clipper.js"></script>
 </head>
 <body>
 
@@ -3363,69 +3364,90 @@ function cleanClosedPath(points, tolerance = 0.0005) {
     return clean;
 }
 
+function resampleClosedPath(points, count, referencePath = points) {
+    if (!Array.isArray(points) || points.length < 3 || count < 3) {
+        throw new Error('Недостаточно точек для построения смещённого контура');
+    }
+
+    const area = contourSignedArea(points);
+    const referenceArea = contourSignedArea(referencePath);
+    let path = points.map(p => ({ x: p.x, y: p.y }));
+    if (Math.sign(area) !== Math.sign(referenceArea)) path.reverse();
+
+    // Начинаем каждый смещённый контур с вершины, ближайшей к началу исходного.
+    const anchor = referencePath[0];
+    let first = 0, best = Infinity;
+    for (let i = 0; i < path.length; i++) {
+        const d = Math.hypot(path[i].x - anchor.x, path[i].y - anchor.y);
+        if (d < best) { best = d; first = i; }
+    }
+    path = path.slice(first).concat(path.slice(0, first));
+
+    const lengths = [];
+    let perimeter = 0;
+    for (let i = 0; i < path.length; i++) {
+        const a = path[i], b = path[(i + 1) % path.length];
+        const len = Math.hypot(b.x - a.x, b.y - a.y);
+        lengths.push(len);
+        perimeter += len;
+    }
+    if (!(perimeter > 1e-10)) throw new Error('Смещённый контур имеет нулевую длину');
+
+    const result = [];
+    let edge = 0, edgeStart = 0;
+    for (let k = 0; k < count; k++) {
+        const target = perimeter * k / count;
+        while (edge < lengths.length - 1 && edgeStart + lengths[edge] < target) {
+            edgeStart += lengths[edge++];
+        }
+        const a = path[edge], b = path[(edge + 1) % path.length];
+        const t = lengths[edge] > 1e-12 ? (target - edgeStart) / lengths[edge] : 0;
+        result.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+    }
+    return result;
+}
+
 function offsetClosedPath(points, distance) {
-    // Смещение полигонального контура с адаптивным ограничением.
-    // На вогнутых углах большой offset может схлопнуть узкий участок и
-    // самопересечься. Вместо отмены всего превью уменьшаем смещение до
-    // максимального безопасного значения, сохраняя исходную траекторию.
+    // ClipperOffset корректно обрабатывает вогнутые углы и очищает
+    // самопересечения, возникающие при смещении сложных замкнутых контуров.
     const source = cleanClosedPath(points);
-    const n = source.length;
     if (Math.abs(distance) < 1e-10) return source.map(p => ({ x: p.x, y: p.y }));
 
-    const buildAt = (d) => {
-        const out = [];
-        const maxMiter = Math.max(Math.abs(d) * 8, 0.0005);
-        for (let i = 0; i < n; i++) {
-            const p = source[i], prev = source[(i - 1 + n) % n], next = source[(i + 1) % n];
-            let ax = p.x - prev.x, ay = p.y - prev.y;
-            let bx = next.x - p.x, by = next.y - p.y;
-            const al = Math.hypot(ax, ay), bl = Math.hypot(bx, by);
-            if (al < 1e-8 || bl < 1e-8) continue;
-            ax /= al; ay /= al; bx /= bl; by /= bl;
-            const n1 = { x: -ay, y: ax }, n2 = { x: -by, y: bx };
-            const cross = ax * by - ay * bx;
-            let q;
-            if (Math.abs(cross) < 1e-7) {
-                let mx = n1.x + n2.x, my = n1.y + n2.y;
-                const ml = Math.hypot(mx, my) || 1;
-                mx /= ml; my /= ml;
-                const dot = mx * n1.x + my * n1.y;
-                const m = Math.abs(dot) > 1e-5 ? d / dot : d;
-                q = { x: p.x + mx * m, y: p.y + my * m };
-            } else {
-                const dx = (n2.x - n1.x) * d;
-                const dy = (n2.y - n1.y) * d;
-                const t = (dx * by - dy * bx) / cross;
-                q = { x: p.x + n1.x * d + ax * t, y: p.y + n1.y * d + ay * t };
-            }
-            const ml = Math.hypot(q.x - p.x, q.y - p.y);
-            if (!Number.isFinite(ml) || ml > maxMiter) {
-                let mx = n1.x + n2.x, my = n1.y + n2.y;
-                const l = Math.hypot(mx, my) || 1;
-                mx /= l; my /= l;
-                const dot = mx * n1.x + my * n1.y;
-                const m = Math.sign(d || 1) * Math.min(maxMiter, Math.abs(d) / Math.max(Math.abs(dot), 0.25));
-                q = { x: p.x + mx * m, y: p.y + my * m };
-            }
-            out.push(q);
-        }
-        return out;
-    };
-
-    // Binary-like backoff: try full offset, then progressively smaller offsets.
-    // A valid original path is always the final fallback; no malformed loop
-    // is passed to the cutter builder.
-    let factor = 1;
-    for (let attempt = 0; attempt < 18; attempt++, factor *= 0.72) {
-        const candidate = buildAt(distance * factor);
-        if (candidate.length === n &&
-            candidate.every(p => Number.isFinite(p.x) && Number.isFinite(p.y)) &&
-            Math.abs(contourSignedArea(candidate)) > 1e-10 &&
-            !isSelfIntersecting(candidate)) {
-            return candidate;
-        }
+    const clipper = window.ClipperLib;
+    if (!clipper || !clipper.ClipperOffset) {
+        throw new Error('Не загрузился модуль геометрического смещения Clipper');
     }
-    return source.map(p => ({ x: p.x, y: p.y }));
+
+    const scale = 1000000; // микрометровая точность при координатах в метрах
+    const path = source.map(p => ({ X: Math.round(p.x * scale), Y: Math.round(p.y * scale) }));
+    const area = contourSignedArea(source);
+    if (Math.abs(area) < 1e-10) throw new Error('Площадь контура слишком мала для смещения');
+
+    const offset = new clipper.ClipperOffset(2.0, 0.25);
+    offset.AddPath(path, clipper.JoinType.jtMiter, clipper.EndType.etClosedPolygon);
+    const solution = new clipper.Paths();
+    // В Clipper положительный delta расширяет полигон; знак преобразуем
+    // так, чтобы положительное distance совпадало с левым нормальным смещением.
+    offset.Execute(-distance * Math.sign(area) * scale, solution);
+
+    if (!solution.length) {
+        throw new Error('Ширина шва слишком велика: контур схлопнулся при смещении');
+    }
+
+    // Если смещение разделило контур на несколько независимых частей,
+    // не подменяем его исходной линией: явно сообщаем о невозможной ширине.
+    if (solution.length > 1) {
+        throw new Error('При такой ширине шва контур разделяется на несколько частей. Уменьшите ширину.');
+    }
+
+    const output = solution[0].map(p => ({ x: p.X / scale, y: p.Y / scale }));
+    if (output.length < 3 || output.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y)) ||
+        Math.abs(contourSignedArea(output)) < 1e-10) {
+        throw new Error('Не удалось построить корректный смещённый контур');
+    }
+
+    // Все уровни 3D-канавки должны иметь одинаковое число точек.
+    return resampleClosedPath(output, source.length, source);
 }
 
 function frameCenterlineMeters(pointsPx, widthM, gapM, side) {
@@ -3711,7 +3733,6 @@ function schedulePreview() {
 function showContourIn3D() {
     if (drawPoints.length < 3) return;
     allContoursPreviewActive = false;
-    clearCutPreview();
 
     try {
         const cx = readSlider('inp-cx', 0);
@@ -3755,10 +3776,13 @@ function showContourIn3D() {
                 finishMesh.position.set(mirrorX(cx), cy, computeFrameFinishZCenter(finish.depth));
                 finishMesh.scale.set(cs, cs, 1);
                 finishMesh.rotation.copy(mainMesh.rotation);
-                cutPreviewGroup = new THREE.Group();
-                cutPreviewGroup.add(mainMesh, finishMesh);
+                const nextPreviewGroup = new THREE.Group();
+                nextPreviewGroup.add(mainMesh, finishMesh);
+                clearCutPreview();
+                cutPreviewGroup = nextPreviewGroup;
                 scene.add(cutPreviewGroup);
             } else {
+                clearCutPreview();
                 cutPreviewMesh = mainMesh;
                 scene.add(cutPreviewMesh);
             }
@@ -3795,9 +3819,14 @@ function showContourIn3D() {
                     finishInst.setMatrixAt(i, m4);
                 });
                 finishInst.instanceMatrix.needsUpdate = true;
-                cutPreviewGroup = new THREE.Group();
-                cutPreviewGroup.add(instMesh, finishInst);
-            } else cutPreviewGroup = instMesh;
+                const nextPreviewGroup = new THREE.Group();
+                nextPreviewGroup.add(instMesh, finishInst);
+                clearCutPreview();
+                cutPreviewGroup = nextPreviewGroup;
+            } else {
+                clearCutPreview();
+                cutPreviewGroup = instMesh;
+            }
             scene.add(cutPreviewGroup);
             setStatus(`✅ Массив (${side === 'front' ? 'лицо' : 'оборот'}): ${instances.length} копий`);
         }
