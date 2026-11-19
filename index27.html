@@ -611,8 +611,8 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
         <div class="checkbox-row">
             <label id="lbl-cut-bevel"><input type="checkbox" id="chk-cut-bevel" checked> Фаска по кромке выреза</label>
         </div>
-        <label id="lbl-cut-bevel-size">Ширина фаски: <span class="val" id="val-cut-bevel">0.0030</span> м</label>
-        <input type="range" id="inp-cut-bevel" min="0.0005" max="0.015" step="0.0005" value="0.003">
+        <label id="lbl-cut-bevel-size">Ширина фаски / глубина второго прохода: <span class="val" id="val-cut-bevel">3.0</span> мм</label>
+        <input type="range" id="inp-cut-bevel" min="0.2" max="15" step="0.1" value="3">
 
         <div id="cut-z-hint">—</div>
 
@@ -3232,6 +3232,10 @@ function computeNormalCutExtrudeDepth() {
     return getCutDepthMeters() + EPS_TOP;
 }
 
+function getCutBevelSizeMeters() {
+    return readSlider('inp-cut-bevel', 3) / 1000;
+}
+
 function computeNormalCutZCenter() {
     const cd = getCutDepthMeters();
     const czo = readSlider('inp-czo', 0);
@@ -3432,7 +3436,7 @@ function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
         if (finishPass) {
             // Второй проход: узкая часть фрезы входит в уже выбранный шов,
             // а расширяющаяся верхняя часть снимает только кромки у входа.
-            const extra = Math.min(readSlider('inp-cut-bevel', 0.003), Math.max(widthM * 0.75, 0.0005));
+            const extra = Math.min(getCutBevelSizeMeters(), Math.max(widthM * 0.75, 0.0005));
             const finishProfile = document.getElementById('sel-frame-finish-profile')?.value || 'bevel';
             let shapeFactor = 1 - t;
             if (finishProfile === 'round') shapeFactor = Math.sqrt(Math.max(0, 1 - t * t));
@@ -3496,7 +3500,7 @@ function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
 }
 
 function buildFrameFinishGeometry(mainDepth, pointsPx) {
-    const requested = Math.max(0.0005, readSlider('inp-cut-bevel', 0.003));
+    const requested = Math.max(0.0005, getCutBevelSizeMeters());
     // Отдельный неглубокий чистовой проход. Его нижняя ширина совпадает
     // с шириной чернового шва, поэтому фреза не требует входа через целую плоскость.
     const finishDepth = Math.min(mainDepth, requested + EPS_TOP);
@@ -3533,7 +3537,7 @@ function buildBaseCutGeometry(cd, customPoints, holesPx = null) {
     const type = document.getElementById('sel-cut-type')?.value || 'normal';
     const profile = document.getElementById('sel-cut-profile')?.value || 'rectangular';
     const useBevel = readCheck('chk-cut-bevel');
-    const bevelRequested = readSlider('inp-cut-bevel', 0.003);
+    const bevelRequested = getCutBevelSizeMeters();
     const bevelAmt = Math.min(bevelRequested, Math.max(0.0001, cd * 0.45));
     const holesToApply = holesPx || [];
 
@@ -3852,7 +3856,7 @@ document.getElementById('btn-draw-finish-all').addEventListener('click', () => {
     el.addEventListener('input', () => {
         const v = document.getElementById(id.replace('inp-', 'val-'));
         if (v) {
-            if (id === 'inp-cut-bevel') v.textContent = parseFloat(el.value).toFixed(4);
+            if (id === 'inp-cut-bevel') v.textContent = parseFloat(el.value).toFixed(1);
             else v.textContent = Number(el.value).toFixed(3);
         }
         redrawDrawCanvas();
