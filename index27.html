@@ -766,6 +766,7 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
     <div class="loading-text" id="loading-text">Обработка...</div>
 </div>
 
+<script src="./cam-lab/dist/cnc-vector-cam.js"></script>
 <script type="module">
 
 /* ============================================================
@@ -2990,6 +2991,9 @@ document.getElementById('inp-ornament-svg')?.addEventListener('change', async (e
     let objectUrl = null;
     try {
         const source = await file.text();
+        // Preserve exact vector geometry from the CAM engine alongside the legacy preview.
+        const vectorImport = window.CNCVectorCAM?.parseSvg(source) || null;
+        window.CNCVectorGeometry = vectorImport?.geometry || null;
         const doc = new DOMParser().parseFromString(source, 'image/svg+xml');
         if (doc.querySelector('parsererror') || doc.documentElement.tagName.toLowerCase() !== 'svg') {
             throw new Error('Некорректный SVG');
@@ -3114,7 +3118,9 @@ document.getElementById('inp-ornament-svg')?.addEventListener('change', async (e
         document.getElementById('btn-draw-finish').disabled = drawPoints.length < 3;
         document.getElementById('btn-draw-finish-all').disabled = !drawContours.some(c => c.length >= 3);
         showAllContoursIn3D();
-        setStatus(`SVG обработан: ${imported.length} областей, включая открытые линии и штрихи. 3D-превью построено автоматически.`);
+        setStatus(vectorImport
+            ? `SVG разобран CAM: ${vectorImport.closedLoopCount} замкнутых контуров, ${vectorImport.openPathCount} открытых путей, ${vectorImport.circleCount} окружностей. 2D/3D-превью пока использует прежний растр.`
+            : `SVG обработан прежним способом: ${imported.length} областей. CAM-модуль не собран — выполните cam-lab/setup-engine.ps1.`);
     } catch (err) {
         setStatus('Ошибка SVG: ' + err.message);
         console.error(err);
