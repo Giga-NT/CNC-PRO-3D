@@ -3014,8 +3014,8 @@ document.getElementById('inp-ornament-svg')?.addEventListener('change', async (e
         }))).filter(contour => contour.length >= 3);
         if (!imported.length) throw new Error('После обработки SVG не осталось пригодных областей');
         pushDrawUndo();
-        const firstIndex = drawContours.length;
-        drawContours[activeContourIndex] = imported[0];
+        const firstIndex = activeContourIndex;
+        drawContours[firstIndex] = imported[0];
         for (let i = 1; i < imported.length; i++) drawContours.push(imported[i]);
         activeContourIndex = firstIndex;
         contourHoles.clear();
