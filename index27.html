@@ -2923,78 +2923,76 @@ function insertShape(shape) {
 }
 
 
-/* ---- SVG IMPORT: rasterize visible SVG artwork, then trace its pixel boundaries ---- */
-function traceSvgMaskContours(mask, width, height) {
-    const edges = [];
-    const outgoing = new Map();
-    const key = (x, y) => x + ',' + y;
-    const addEdge = (x1, y1, x2, y2) => {
-        const edge = { x1, y1, x2, y2, dir: (x2 > x1) ? 0 : (y2 > y1) ? 1 : (x2 < x1) ? 2 : 3, used: false };
-        edges.push(edge);
-        const k = key(x1, y1);
-        if (!outgoing.has(k)) outgoing.set(k, []);
-        outgoing.get(k).push(edge);
-    };
-    const filled = (x, y) => x >= 0 && x < width && y >= 0 && y < height && mask[y * width + x] !== 0;
-
-    for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-            if (!filled(x, y)) continue;
-            if (!filled(x, y - 1)) addEdge(x, y, x + 1, y);
-            if (!filled(x + 1, y)) addEdge(x + 1, y, x + 1, y + 1);
-            if (!filled(x, y + 1)) addEdge(x + 1, y + 1, x, y + 1);
-            if (!filled(x - 1, y)) addEdge(x, y + 1, x, y);
-        }
+/* ---- SVG IMPORT: native vector geometry sampling (no raster tracing) ---- */
+function extractSvgVectorContours(source, viewBox) {
+    const parser = new DOMParser();
+    const parsed = parser.parseFromString(source, 'image/svg+xml');
+    if (parsed.querySelector('parsererror') || parsed.documentElement.localName !== 'svg') {
+        throw new Error('Некорректный SVG');
     }
-
+    const [vx, vy, vw, vh] = viewBox;
+    const host = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    host.setAttribute('viewBox', viewBox.join(' '));
+    host.setAttribute('width', String(vw));
+    host.setAttribute('height', String(vh));
+    host.setAttribute('preserveAspectRatio', 'none');
+    host.style.cssText = 'position:fixed;left:-100000px;top:-100000px;width:'+vw+'px;height:'+vh+'px;overflow:visible;pointer-events:none';
+    const importedRoot = document.importNode(parsed.documentElement, true);
+    // The outer viewport owns the viewBox mapping; retain all source children and transforms.
+    while (importedRoot.firstChild) host.appendChild(importedRoot.firstChild);
+    document.body.appendChild(host);
     const contours = [];
-    for (const firstEdge of edges) {
-        if (firstEdge.used) continue;
-        const startKey = key(firstEdge.x1, firstEdge.y1);
-        const points = [{ x: firstEdge.x1, y: firstEdge.y1 }];
-        let edge = firstEdge, closed = false;
-        for (let guard = 0; guard <= edges.length; guard++) {
-            edge.used = true;
-            const endKey = key(edge.x2, edge.y2);
-            if (endKey === startKey) { closed = true; break; }
-            points.push({ x: edge.x2, y: edge.y2 });
-            const candidates = (outgoing.get(endKey) || []).filter(candidate => !candidate.used);
-            if (!candidates.length) break;
-            // At diagonal pixel contacts, prefer the tight right turn so separate
-            // pixel regions remain separate closed boundaries.
-            const turnRank = delta => delta === 1 ? 0 : delta === 0 ? 1 : delta === 3 ? 2 : 3;
-            candidates.sort((a, b) =>
-                turnRank((a.dir - edge.dir + 4) % 4) - turnRank((b.dir - edge.dir + 4) % 4));
-            edge = candidates[0];
+    let sampled = 0;
+    try {
+        const nodes = host.querySelectorAll('path,rect,circle,ellipse,polygon,polyline');
+        for (const node of nodes) {
+            const style = getComputedStyle(node);
+            if (style.display === 'none' || style.visibility === 'hidden' ||
+                Number(style.opacity || 1) <= 0 || style.fill === 'none') continue;
+            if (node.closest('defs,clipPath,mask,pattern,marker,symbol')) continue;
+            if (typeof node.getTotalLength !== 'function' || typeof node.getPointAtLength !== 'function') continue;
+            let length;
+            try { length = node.getTotalLength(); } catch (_) { continue; }
+            if (!Number.isFinite(length) || length <= 0) continue;
+            const tag = node.localName.toLowerCase();
+            const d = node.getAttribute('d') || '';
+            const explicitlyClosed = tag === 'polygon' || tag === 'rect' || tag === 'circle' ||
+                tag === 'ellipse' || (tag === 'path' && /[zZ]/.test(d));
+            // SVG fills implicitly close open subpaths. getTotalLength samples the source path;
+            // close the sampled outline for the native solid-cut pipeline.
+            const count = Math.max(12, Math.min(4096, Math.ceil(length / Math.max(vw, vh) * 700)));
+            if (sampled + count > 24000) throw new Error('Слишком сложный SVG: превышен лимит точек (24000)');
+            const matrix = node.getCTM();
+            if (!matrix) continue;
+            const points = [];
+            for (let i = 0; i < count; i++) {
+                const p = node.getPointAtLength(length * i / count);
+                const t = new DOMPoint(p.x, p.y).matrixTransform(matrix);
+                if (Number.isFinite(t.x) && Number.isFinite(t.y)) points.push({ x: t.x, y: t.y });
+            }
+            sampled += points.length;
+            if (points.length >= 3) {
+                const first = points[0], last = points[points.length - 1];
+                if (Math.hypot(first.x-last.x, first.y-last.y) < 0.01) points.pop();
+                if (points.length >= 3 && Math.abs(contourSignedArea(points)) > 0.02) contours.push(points);
+            }
         }
-        if (!closed || points.length < 4) continue;
-
-        // Closed Douglas-Peucker simplification: split at the farthest vertex
-        // so the first/last edge is simplified as well.
-        let split = 1, farthest = -1;
-        for (let i = 1; i < points.length; i++) {
-            const d = Math.hypot(points[i].x - points[0].x, points[i].y - points[0].y);
-            if (d > farthest) { farthest = d; split = i; }
-        }
-        const partA = simplifyPath(points.slice(0, split + 1), 1.25);
-        const partB = simplifyPath(points.slice(split).concat([points[0]]), 1.25);
-        const simplified = partA.slice(0, -1).concat(partB.slice(0, -1));
-        if (simplified.length >= 3 && Math.abs(contourSignedArea(simplified)) > 2) contours.push(simplified);
+    } finally {
+        host.remove();
     }
+    if (!contours.length) throw new Error('В SVG не найдены замкнутые заполненные контуры. Контуры только с обводкой пока не импортируются.');
     return contours;
 }
 
 document.getElementById('inp-ornament-svg')?.addEventListener('change', async (ev) => {
     const file = ev.target.files?.[0];
     if (!file) return;
-    let objectUrl = null;
     try {
         const source = await file.text();
         const doc = new DOMParser().parseFromString(source, 'image/svg+xml');
-        if (doc.querySelector('parsererror') || doc.documentElement.tagName.toLowerCase() !== 'svg') {
+        if (doc.querySelector('parsererror') || doc.documentElement.localName !== 'svg') {
             throw new Error('Некорректный SVG');
         }
-
         let vb = (doc.documentElement.getAttribute('viewBox') || '').trim().split(/[ ,]+/).map(Number);
         if (vb.length !== 4 || !vb.every(Number.isFinite) || vb[2] <= 0 || vb[3] <= 0) {
             const w = parseFloat(doc.documentElement.getAttribute('width')) || 300;
@@ -3002,124 +3000,47 @@ document.getElementById('inp-ornament-svg')?.addEventListener('change', async (e
             vb = [0, 0, w, h];
         }
         const [vx, vy, vw, vh] = vb;
-
-        // Browser SVG renderer handles path commands, transforms, strokes, fills,
-        // polylines and open paths; no manual path-type filtering is needed.
-        objectUrl = URL.createObjectURL(new Blob([source], { type: 'image/svg+xml;charset=utf-8' }));
-        const image = new Image();
-        await new Promise((resolve, reject) => {
-            image.onload = resolve;
-            image.onerror = () => reject(new Error('Браузер не смог отрисовать SVG'));
-            image.src = objectUrl;
-        });
-
-        const rasterScale = Math.min(1, 512 / Math.max(vw, vh));
-        const rasterWidth = Math.max(1, Math.round(vw * rasterScale));
-        const rasterHeight = Math.max(1, Math.round(vh * rasterScale));
-        const raster = document.createElement('canvas');
-        raster.width = rasterWidth;
-        raster.height = rasterHeight;
-        const rasterCtx = raster.getContext('2d', { willReadFrequently: true });
-        rasterCtx.clearRect(0, 0, rasterWidth, rasterHeight);
-        rasterCtx.drawImage(image, 0, 0, rasterWidth, rasterHeight);
-
-        const pixels = rasterCtx.getImageData(0, 0, rasterWidth, rasterHeight).data;
-        const corners = [
-            0, (rasterWidth - 1) * 4,
-            (rasterHeight - 1) * rasterWidth * 4,
-            ((rasterHeight - 1) * rasterWidth + rasterWidth - 1) * 4
-        ].map(i => [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]);
-        const opaqueCorners = corners.filter(c => c[3] > 220);
-        let solidBackground = opaqueCorners.length === 4;
-        if (solidBackground) {
-            const avg = [0, 1, 2].map(ch => opaqueCorners.reduce((sum, c) => sum + c[ch], 0) / 4);
-            solidBackground = opaqueCorners.every(c =>
-                Math.hypot(c[0] - avg[0], c[1] - avg[1], c[2] - avg[2]) < 45);
-            if (solidBackground) {
-                const mask = new Uint8Array(rasterWidth * rasterHeight);
-                let foregroundCount = 0;
-                for (let i = 0; i < mask.length; i++) {
-                    const p = i * 4;
-                    const alpha = pixels[p + 3];
-                    const difference = Math.hypot(pixels[p] - avg[0], pixels[p + 1] - avg[1], pixels[p + 2] - avg[2]);
-                    if (alpha > 12 && (difference > 32 || alpha < 210)) {
-                        mask[i] = 1;
-                        foregroundCount++;
-                    }
-                }
-                if (!foregroundCount) throw new Error('В SVG не найден видимый рисунок на фоне');
-                var svgMask = mask;
-            }
-        }
-        if (!solidBackground) {
-            const mask = new Uint8Array(rasterWidth * rasterHeight);
-            let foregroundCount = 0;
-            for (let i = 0; i < mask.length; i++) {
-                if (pixels[i * 4 + 3] > 16) { mask[i] = 1; foregroundCount++; }
-            }
-            if (!foregroundCount) throw new Error('В SVG нет видимых элементов');
-            var svgMask = mask;
-        }
-
-        const traced = traceSvgMaskContours(svgMask, rasterWidth, rasterHeight);
-        if (!traced.length) throw new Error('Не удалось выделить замкнутые области рисунка из SVG');
-
+        const vectors = extractSvgVectorContours(source, vb);
         const canvasScale = Math.min(1.2, 150 / Math.max(vw, vh));
-        const imported = traced.map(contour => contour.map(p => {
-            const sx = vx + p.x / rasterWidth * vw;
-            const sy = vy + p.y / rasterHeight * vh;
-            return {
-                x: drawCanvas.width / 2 + (sx - vx - vw / 2) * canvasScale,
-                y: drawCanvas.height / 2 - (sy - vy - vh / 2) * canvasScale
-            };
-        })).filter(contour => contour.length >= 3);
-
+        const imported = vectors.map(contour => contour.map(p => ({
+            x: drawCanvas.width / 2 + (p.x - vx - vw / 2) * canvasScale,
+            y: drawCanvas.height / 2 - (p.y - vy - vh / 2) * canvasScale
+        }))).filter(contour => contour.length >= 3);
         if (!imported.length) throw new Error('После обработки SVG не осталось пригодных областей');
-
         pushDrawUndo();
+        const firstIndex = drawContours.length;
         drawContours[activeContourIndex] = imported[0];
         for (let i = 1; i < imported.length; i++) drawContours.push(imported[i]);
-        activeContourIndex = drawContours.length - imported.length;
+        activeContourIndex = firstIndex;
         contourHoles.clear();
-
-        // Определяем внутренние области как отверстия по вложенности.
-        const contourArea = c => Math.abs(c.reduce((sum, p, i) => {
-            const q = c[(i + 1) % c.length];
-            return sum + p.x * q.y - q.x * p.y;
-        }, 0) / 2);
+        const areaOf = c => Math.abs(c.reduce((sum,p,i) => {
+            const q=c[(i+1)%c.length]; return sum+p.x*q.y-q.x*p.y;
+        },0)/2);
         imported.forEach((inner, ii) => {
-            const probe = inner.reduce((a, p) => ({
-                x: a.x + p.x / inner.length,
-                y: a.y + p.y / inner.length
-            }), { x: 0, y: 0 });
-            const area = contourArea(inner);
-            for (let oi = 0; oi < imported.length; oi++) {
-                if (oi !== ii && contourArea(imported[oi]) > area && pointInPolygon(probe, imported[oi])) {
-                    contourHoles.add(activeContourIndex + ii);
-                    break;
+            const probe = inner[0];
+            const area = areaOf(inner);
+            for (let oi=0; oi<imported.length; oi++) {
+                if (oi!==ii && areaOf(imported[oi])>area && pointInPolygon(probe, imported[oi])) {
+                    contourHoles.add(firstIndex+ii); break;
                 }
             }
         });
-
-        // SVG becomes a filled raster engraving, so use the ordinary solid cut.
         const cutType = document.getElementById('sel-cut-type');
         if (cutType) {
             cutType.value = 'normal';
             cutType.dispatchEvent(new Event('change', { bubbles: true }));
         }
-
         activeParametricArea = null;
         refreshDrawPointsRef();
         fitAllDrawContours();
         document.getElementById('btn-draw-finish').disabled = drawPoints.length < 3;
         document.getElementById('btn-draw-finish-all').disabled = !drawContours.some(c => c.length >= 3);
         showAllContoursIn3D();
-        setStatus(`SVG обработан: ${imported.length} областей, включая открытые линии и штрихи. 3D-превью построено автоматически.`);
+        setStatus('SVG: импортировано '+imported.length+' векторных контуров. Геометрия взята напрямую из SVG, без растрирования.');
     } catch (err) {
         setStatus('Ошибка SVG: ' + err.message);
         console.error(err);
     } finally {
-        if (objectUrl) URL.revokeObjectURL(objectUrl);
         ev.target.value = '';
     }
 });
