@@ -15,13 +15,23 @@ The script checks out the pinned upstream revision, installs its locked dependen
 ## What is connected
 
 - `index27.html` loads the generated browser bundle.
-- On SVG import, the bridge calls upstream `processSvg()` and retains the resulting semantic geometry at `window.CNCVectorGeometry`.
-- The geometry contains line/arc segments, circles, closed loops, regions and open paths, in millimetres.
-- The current canvas/3D preview still uses the legacy raster-to-contour pipeline. This is deliberate: the existing editor and cutter expect closed polygon contours. Feeding open paths into that pipeline would corrupt the current workflow.
+- SVG import defaults to the CAM vector path; the UI selector retains a separate raster fallback.
+- The bridge calls upstream `processSvg()` and exposes the semantic geometry at `window.CNCVectorGeometry`.
+- Closed CAM loops are mapped into the existing editable polygon contour collection.
+- Open paths and circles are retained separately and drawn as a 2D overlay; they are not silently closed or polygonized for cutting.
+- CAM line and arc segments are preserved by the parser; arcs are sampled only for the current canvas display.
+- The raster importer remains available as an explicit fallback.
+
+## Current limitations
+
+- Open paths and circles are display-only; they are not yet selectable/editable or connected to 3D cutting.
+- Closed-loop display/editing uses the existing polygon editor, so arcs are currently tessellated for that editor.
+- Region/island metadata is retained in the CAM result; only island loops are mapped to the editor's hole flags.
+- No toolpath generation, stock-removal simulation, or machine-ready G-code integration is claimed by this milestone. Do not emit machine-ready G-code until machine, origin, tool and safety parameters are explicitly mapped and validated.
 
 ## Next integration milestone
 
-Replace the legacy preview path in stages: draw vector open paths separately, map closed loops into the editor's editable geometry model, then connect selected vector entities to toolpath generation and stock simulation. Do not emit machine-ready G-code until machine, origin, tool and safety parameters are explicitly mapped and validated.
+Add native editable vector entities (including analytic arcs and circles), selection/movement/deletion, and project persistence. Then connect supported geometry to CAM toolpaths and stock simulation.
 
 ## API
 
