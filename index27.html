@@ -4200,7 +4200,11 @@ function showContourIn3D() {
 }
 
 function showAllContoursIn3D() {
-    document.getElementById('csg-tools')?.classList.remove('collapsed');
+    const csgTools = document.getElementById('csg-tools');
+    if (csgTools) {
+        csgTools.style.display = 'block';
+        csgTools.classList.remove('collapsed');
+    }
     clearCutPreview();
     allContoursPreviewActive = true;
     const groups = groupContoursWithHoles();
