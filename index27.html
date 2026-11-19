@@ -568,8 +568,8 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
         <label>Смещение Z (усл.): <span class="val" id="val-czo">0.0</span> (-5…+5)</label>
         <input type="range" id="inp-czo" min="-5" max="5" step="0.1" value="0">
 
-        <label>Глубина выреза (м): <span class="val" id="val-cd">0.05</span> м</label>
-        <input type="range" id="inp-cd" min="0.005" max="0.30" step="0.005" value="0.05">
+        <label>Глубина обработки: <span class="val" id="val-cd">50.0</span> мм</label>
+        <input type="range" id="inp-cd" min="0.2" max="300" step="0.1" value="50">
 
         <label>Тип операции:</label>
         <select id="sel-cut-type">
@@ -3224,8 +3224,16 @@ function getStellaHalfDepth() { return getStellaFullDepth() / 2; }
 
 const EPS_TOP = 0.002;
 
+function getCutDepthMeters() {
+    return readSlider('inp-cd', 50) / 1000;
+}
+
+function computeNormalCutExtrudeDepth() {
+    return getCutDepthMeters() + EPS_TOP;
+}
+
 function computeNormalCutZCenter() {
-    const cd = readSlider('inp-cd', 0.05);
+    const cd = getCutDepthMeters();
     const czo = readSlider('inp-czo', 0);
     const half = getStellaHalfDepth();
     if (activeCutSide === 'front') return half - cd / 2 + EPS_TOP / 2 + czo / 100;
@@ -3243,25 +3251,24 @@ function computeFrameTopZ() {
 }
 
 function computeFrameExtrudeDepth() {
-    const cutDepth = readSlider('inp-cd', 0.05);
-    return cutDepth + EPS_TOP;
+    return getCutDepthMeters() + EPS_TOP;
 }
 
 function updateCutZHint() {
     const hint = document.getElementById('cut-z-hint');
     if (!hint) return;
 
-    const cutDepth = readSlider('inp-cd', 0.05);
+    const cutDepth = getCutDepthMeters();
     const type = document.getElementById('sel-cut-type')?.value || 'normal';
     const sideLabel = activeCutSide === 'front' ? 'лицо' : 'оборот';
     const half = getStellaHalfDepth();
 
     let extrudeDepth, topZ;
     if (type === 'normal') {
-        extrudeDepth = cutDepth;
+        extrudeDepth = computeNormalCutExtrudeDepth();
         topZ = activeCutSide === 'front'
-            ? computeNormalCutZCenter() + cutDepth / 2
-            : computeNormalCutZCenter() - cutDepth / 2;
+            ? computeNormalCutZCenter() + extrudeDepth / 2
+            : computeNormalCutZCenter() - extrudeDepth / 2;
     } else {
         extrudeDepth = computeFrameExtrudeDepth();
         topZ = activeCutSide === 'front'
@@ -3694,7 +3701,7 @@ function showContourIn3D() {
 
         let extrudeDepth, positionZ;
         if (type === 'normal') {
-            extrudeDepth = readSlider('inp-cd', 0.05);
+            extrudeDepth = getCutDepthMeters();
             positionZ = computeNormalCutZCenter();
         } else {
             extrudeDepth = computeFrameExtrudeDepth();
@@ -3795,7 +3802,7 @@ function showAllContoursIn3D() {
 
     let extrudeDepth, positionZ;
     if (type === 'normal') {
-        extrudeDepth = readSlider('inp-cd', 0.05);
+        extrudeDepth = getCutDepthMeters();
         positionZ = computeNormalCutZCenter();
     } else {
         extrudeDepth = computeFrameExtrudeDepth();
@@ -3893,6 +3900,7 @@ if (document.getElementById('sel-cut-type')) document.getElementById('sel-cut-ty
         if (span) {
             if (id === 'inp-czo') span.textContent = val.toFixed(1);
             else if (id === 'inp-rot') span.textContent = val.toFixed(0);
+            else if (id === 'inp-cd') span.textContent = val.toFixed(1);
             else span.textContent = val.toFixed(2);
         }
         updateCutZHint();
@@ -4095,7 +4103,7 @@ document.getElementById('btn-cut').addEventListener('click', () => {
     const cx = readSlider('inp-cx', 0);
     const cy = readSlider('inp-cy', 0.7);
     const cs = readSlider('inp-cs', 0.5);
-    const cutDepth = readSlider('inp-cd', 0.05);
+    const cutDepth = getCutDepthMeters();
     const rot = readSlider('inp-rot', 0);
     const side = activeCutSide;
     const ry = cutterRotationY();
@@ -4103,7 +4111,7 @@ document.getElementById('btn-cut').addEventListener('click', () => {
 
     let extrudeDepth, positionZ;
     if (type === 'normal') {
-        extrudeDepth = cutDepth;
+        extrudeDepth = computeNormalCutExtrudeDepth();
         positionZ = computeNormalCutZCenter();
     } else {
         extrudeDepth = computeFrameExtrudeDepth();
@@ -4177,7 +4185,7 @@ document.getElementById('btn-cut-all')?.addEventListener('click', () => {
     const cx=readSlider('inp-cx',0), cy=readSlider('inp-cy',0.7), cs=readSlider('inp-cs',0.5);
     const rot=readSlider('inp-rot',0), type=document.getElementById('sel-cut-type')?.value||'normal';
     const side=activeCutSide, ry=cutterRotationY();
-    const depth=type==='normal'?readSlider('inp-cd',0.05):computeFrameExtrudeDepth();
+    const depth=type==='normal'?computeNormalCutExtrudeDepth():computeFrameExtrudeDepth();
     const z=type==='normal'?computeNormalCutZCenter():computeFrameTopZ();
     const cutters=[];
     try {
@@ -4222,7 +4230,7 @@ document.getElementById('btn-apply-pattern').addEventListener('click', () => {
     const cx = readSlider('inp-cx', 0);
     const cy = readSlider('inp-cy', 0.7);
     const cs = readSlider('inp-cs', 0.5);
-    const cutDepth = readSlider('inp-cd', 0.05);
+    const cutDepth = getCutDepthMeters();
     const rot = readSlider('inp-rot', 0);
     const side = activeCutSide;
     const ry = cutterRotationY();
@@ -4230,7 +4238,7 @@ document.getElementById('btn-apply-pattern').addEventListener('click', () => {
 
     let extrudeDepth, positionZ;
     if (type === 'normal') {
-        extrudeDepth = cutDepth;
+        extrudeDepth = computeNormalCutExtrudeDepth();
         positionZ = computeNormalCutZCenter();
     } else {
         extrudeDepth = computeFrameExtrudeDepth();
@@ -4293,17 +4301,17 @@ document.getElementById('btn-apply-pattern').addEventListener('click', () => {
 document.querySelectorAll('.preset-btn').forEach(btn => {
     btn.addEventListener('click', () => {
         const presets = {
-            'preset-clear': { czo: 5, cd: 0.005 },
-            'preset-shallow': { czo: 0, cd: 0.01 },
-            'preset-deep': { czo: 0, cd: 0.04 },
-            'preset-through': { czo: 0, cd: params.depth + 0.02 }
+            'preset-clear': { czo: 5, cd: 5 },
+            'preset-shallow': { czo: 0, cd: 10 },
+            'preset-deep': { czo: 0, cd: 40 },
+            'preset-through': { czo: 0, cd: (params.depth + 0.02) * 1000 }
         };
         const p = presets[btn.id];
         if (!p) return;
         document.getElementById('inp-czo').value = p.czo;
         document.getElementById('inp-cd').value = p.cd;
         document.getElementById('val-czo').textContent = p.czo.toFixed(1);
-        document.getElementById('val-cd').textContent = p.cd.toFixed(3);
+        document.getElementById('val-cd').textContent = p.cd.toFixed(1);
         updateCutZHint();
         if (drawPoints.length >= 3) schedulePreview();
     });
