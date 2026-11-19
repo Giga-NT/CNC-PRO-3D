@@ -9,7 +9,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Node.js command failed." }
     $nodeVersion = [version]$nodeVersionText
 } catch {
-    throw "Node.js was not found. Install Node.js 22.12.0 or newer, then retry."
+    throw "Node.js was not found or its version could not be read. Install a supported Node.js release, then retry."
 }
 if (($nodeVersion.Major -eq 20 -and $nodeVersion -lt [version]"20.19.0") -or
     ($nodeVersion.Major -eq 22 -and $nodeVersion -lt [version]"22.12.0") -or
