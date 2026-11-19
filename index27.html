@@ -2938,7 +2938,13 @@ function extractSvgVectorContours(source, viewBox) {
     host.setAttribute('preserveAspectRatio', 'none');
     host.style.cssText = 'position:fixed;left:-100000px;top:-100000px;width:'+vw+'px;height:'+vh+'px;overflow:visible;pointer-events:none';
     const importedRoot = document.importNode(parsed.documentElement, true);
-    // The outer viewport owns the viewBox mapping; retain all source children and transforms.
+    // Preserve root-level presentation attributes (fill, stroke, styles, opacity, etc.).
+    for (const attr of Array.from(importedRoot.attributes)) {
+        if (!['xmlns','width','height','viewBox','preserveAspectRatio','x','y'].includes(attr.name)) {
+            host.setAttribute(attr.name, attr.value);
+        }
+    }
+    // The host viewBox maps source coordinates into a zero-based viewport.
     while (importedRoot.firstChild) host.appendChild(importedRoot.firstChild);
     document.body.appendChild(host);
     const contours = [];
@@ -3003,8 +3009,8 @@ document.getElementById('inp-ornament-svg')?.addEventListener('change', async (e
         const vectors = extractSvgVectorContours(source, vb);
         const canvasScale = Math.min(1.2, 150 / Math.max(vw, vh));
         const imported = vectors.map(contour => contour.map(p => ({
-            x: drawCanvas.width / 2 + (p.x - vx - vw / 2) * canvasScale,
-            y: drawCanvas.height / 2 - (p.y - vy - vh / 2) * canvasScale
+            x: drawCanvas.width / 2 + (p.x - vw / 2) * canvasScale,
+            y: drawCanvas.height / 2 - (p.y - vh / 2) * canvasScale
         }))).filter(contour => contour.length >= 3);
         if (!imported.length) throw new Error('После обработки SVG не осталось пригодных областей');
         pushDrawUndo();
