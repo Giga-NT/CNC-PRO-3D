@@ -2170,6 +2170,7 @@ function snapshotDraw() {
     return {
         contours: drawContours.map(c => c.map(p => ({ x: p.x, y: p.y }))),
         holes: Array.from(contourHoles),
+        vectorOverlay: JSON.parse(JSON.stringify(vectorOverlay)),
         active: activeContourIndex
     };
 }
@@ -2186,6 +2187,7 @@ function undoDraw() {
     const s = drawUndoStack.pop();
     drawContours = s.contours;
     contourHoles = new Set(s.holes);
+    vectorOverlay = s.vectorOverlay || { openPaths: [], circles: [] };
     activeContourIndex = Math.min(s.active, drawContours.length - 1);
     if (activeContourIndex < 0) activeContourIndex = 0;
     refreshDrawPointsRef();
@@ -2198,6 +2200,7 @@ function redoDraw() {
     const s = drawRedoStack.pop();
     drawContours = s.contours;
     contourHoles = new Set(s.holes);
+    vectorOverlay = s.vectorOverlay || { openPaths: [], circles: [] };
     activeContourIndex = Math.min(s.active, drawContours.length - 1);
     if (activeContourIndex < 0) activeContourIndex = 0;
     refreshDrawPointsRef();
@@ -3126,7 +3129,9 @@ document.getElementById('inp-ornament-svg')?.addEventListener('change', async (e
             refreshDrawPointsRef();
             document.getElementById('btn-draw-finish').disabled = drawPoints.length < 3;
             document.getElementById('btn-draw-finish-all').disabled = !drawContours.some(c => c.length >= 3);
-            showAllContoursIn3D();
+            redrawDrawCanvas();
+            if (importedLoops.length) showAllContoursIn3D();
+            else clearCutPreview();
             setStatus(`SVG импортирован векторно: ${importedLoops.length} контуров, ${vectorOverlay.openPaths.length} открытых путей, ${vectorOverlay.circles.length} окружностей. Открытые пути и окружности пока доступны только в 2D-превью.`);
             return;
         }
@@ -5011,6 +5016,7 @@ function captureProjectState() {
         params: { ...params },
         profilePointsFront, profilePointsBack, useLoft,
         drawContours, activeContourIndex,
+        vectorOverlay,
         contourHoles: Array.from(contourHoles),
         textLines, cutHistory, activeCutSide, activeTextSide,
         colorEnabled, isCustomProfile, lineIdCounter
@@ -5033,6 +5039,9 @@ function restoreProjectState(project) {
         refreshDrawPointsRef();
     }
     if (Array.isArray(state.contourHoles)) { contourHoles = new Set(state.contourHoles); refreshDrawPointsRef(); }
+    vectorOverlay = state.vectorOverlay && Array.isArray(state.vectorOverlay.openPaths) && Array.isArray(state.vectorOverlay.circles)
+        ? state.vectorOverlay
+        : { openPaths: [], circles: [] };
     if (Array.isArray(state.cutHistory)) cutHistory = state.cutHistory;
     if (Array.isArray(state.textLines)) { textLines = state.textLines; renderTextLines(); }
     document.getElementById('btn-side-front').classList.toggle('active-tool', activeCutSide === 'front');
