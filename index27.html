@@ -3428,7 +3428,7 @@ function offsetClosedPath(points, distance) {
     const solution = new clipper.Paths();
     // В Clipper положительный delta расширяет полигон; знак преобразуем
     // так, чтобы положительное distance совпадало с левым нормальным смещением.
-    offset.Execute(-distance * Math.sign(area) * scale, solution);
+    offset.Execute(solution, -distance * Math.sign(area) * scale);
 
     if (!solution.length) {
         throw new Error('Ширина шва слишком велика: контур схлопнулся при смещении');
