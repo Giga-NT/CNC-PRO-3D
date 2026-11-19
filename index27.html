@@ -508,7 +508,7 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
                 </select>
             </label>
             </div>
-            <div class="draw-instructions">Готовые мотивы — замкнутые векторные контуры. Для сложных узоров используйте SVG: контуры импортируются для реального 3D-вырезания, а не как картинка.</div>
+            <div class="draw-instructions">SVG по умолчанию импортируется как векторная геометрия. Замкнутые контуры доступны в редакторе; открытые линии и окружности пока отображаются отдельным 2D-слоем. При необходимости переключитесь на резервный растровый режим.</div>
         </div>
 
         <div class="profile-section" style="margin-top:6px;">
@@ -3023,8 +3023,11 @@ document.getElementById('inp-ornament-svg')?.addEventListener('change', async (e
     let objectUrl = null;
     try {
         const source = await file.text();
-        // Preserve exact vector geometry from the CAM engine alongside the legacy preview.
-        const vectorImport = window.CNCVectorCAM?.parseSvg(source) || null;
+        // Parse CAM geometry only in vector mode; raster mode remains an independent fallback.
+        const importMode = document.getElementById('sel-svg-import-mode')?.value || 'vector';
+        const vectorImport = importMode === 'vector'
+            ? (window.CNCVectorCAM?.parseSvg(source) || null)
+            : null;
         window.CNCVectorGeometry = vectorImport?.geometry || null;
         const doc = new DOMParser().parseFromString(source, 'image/svg+xml');
         if (doc.querySelector('parsererror') || doc.documentElement.tagName.toLowerCase() !== 'svg') {
@@ -3041,7 +3044,6 @@ document.getElementById('inp-ornament-svg')?.addEventListener('change', async (e
 
         // Primary path: keep CAM geometry analytic where possible. Closed loops enter
         // the existing polygon editor; open paths and circles remain separate overlays.
-        const importMode = document.getElementById('sel-svg-import-mode')?.value || 'vector';
         if (importMode === 'vector' && vectorImport?.geometry) {
             const geometry = vectorImport.geometry;
             const bounds = geometry.bounds;
