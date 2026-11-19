@@ -2724,6 +2724,7 @@ document.getElementById('btn-draw-clear').addEventListener('click', () => {
     drawContours = [[]];
     activeContourIndex = 0;
     contourHoles.clear();
+    vectorOverlay = { openPaths: [], circles: [] };
     brushPath = [];
     isDrawing = false;
     refreshDrawPointsRef();
