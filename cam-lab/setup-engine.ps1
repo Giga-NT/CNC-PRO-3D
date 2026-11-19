@@ -11,8 +11,10 @@ try {
 } catch {
     throw "Node.js was not found. Install Node.js 22.12.0 or newer, then retry."
 }
-if ($nodeVersion -lt [version]"22.12.0") {
-    throw "Node.js 22.12.0 or newer is required. Detected: $nodeVersionText"
+if (($nodeVersion.Major -eq 20 -and $nodeVersion -lt [version]"20.19.0") -or
+    ($nodeVersion.Major -eq 22 -and $nodeVersion -lt [version]"22.12.0") -or
+    ($nodeVersion.Major -lt 20) -or ($nodeVersion.Major -eq 21)) {
+    throw "Vite 8 requires Node.js 20.19+ or 22.12+. Detected: $nodeVersionText"
 }
 
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
