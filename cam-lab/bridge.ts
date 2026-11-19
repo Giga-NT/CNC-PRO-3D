@@ -27,8 +27,16 @@ function assertFiniteGeometry(geometry: ParsedGeometry): void {
   for (const loop of geometry.loops) {
     for (const segment of loop.segments) {
       values.push(segment.start.x, segment.start.y, segment.end.x, segment.end.y);
+      if (segment.type === 'arc') {
+        values.push(segment.center.x, segment.center.y, segment.radius, segment.startAngle, segment.endAngle);
+      }
     }
   }
+  for (const circle of geometry.circles) {
+    values.push(circle.center.x, circle.center.y, circle.radius);
+  }
+  const bounds = geometry.bounds;
+  values.push(bounds.minX, bounds.minY, bounds.maxX, bounds.maxY);
   if (!values.every(Number.isFinite)) {
     throw new Error('SVG geometry contains non-finite coordinates');
   }
@@ -40,7 +48,7 @@ export function parseSvgForCNC(svgText: string): CNCVectorImportSummary {
   }
   const geometry = processSvg(svgText);
   assertFiniteGeometry(geometry);
-  if (!geometry.loops.length && !geometry.openPaths.length) {
+  if (!geometry.loops.length && !geometry.openPaths.length && !geometry.circles.length) {
     throw new Error('SVG contains no supported vector geometry');
   }
   return {
