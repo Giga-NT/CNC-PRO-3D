@@ -1753,12 +1753,19 @@ function createStella() {
     // Радиус кромки ограничиваем геометрически: фаски с обеих сторон
     // не должны пересекаться внутри тонкой плиты.
     const edgeRadius = Math.max(0, params.bevel || 0);
-    const safeBevelThickness = Math.min(edgeRadius, Math.max(0, params.depth * 0.45));
+    const bevelEnabled = edgeRadius > 0.0001;
+    // params.depth — это ПОЛНАЯ готовая толщина детали, включая обе фаски.
+    // ExtrudeGeometry добавляет bevelThickness с каждой стороны, поэтому
+    // центральная прямая часть должна быть уменьшена на две толщины фаски.
+    const safeBevelThickness = bevelEnabled
+        ? Math.min(edgeRadius, Math.max(0, params.depth * 0.45))
+        : 0;
+    const coreDepth = Math.max(0.0001, params.depth - 2 * safeBevelThickness);
     const safeBevelSize = Math.min(edgeRadius, Math.min(params.width, params.height) * 0.25);
     const geometry = new THREE.ExtrudeGeometry(shape, {
         steps: 1,
-        depth: params.depth,
-        bevelEnabled: edgeRadius > 0.0001,
+        depth: coreDepth,
+        bevelEnabled,
         bevelThickness: safeBevelThickness,
         bevelSize: safeBevelSize,
         bevelSegments: 12,
@@ -3217,8 +3224,10 @@ function mirrorRot(deg) { return activeCutSide === 'front' ? deg : -deg; }
 function cutterRotationY() { return activeCutSide === 'front' ? 0 : Math.PI; }
 
 function getStellaFullDepth() {
+    // Толщина заготовки — готовый габарит по Z. Фаски уже входят в него.
+    // Профильные модели строятся отдельно без добавления фаски к толщине.
     if (isCustomProfile) return params.profileDepth;
-    return params.depth + 2 * params.bevel;
+    return params.depth;
 }
 function getStellaHalfDepth() { return getStellaFullDepth() / 2; }
 
