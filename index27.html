@@ -3089,7 +3089,11 @@ document.getElementById('inp-ornament-svg')?.addEventListener('change', async (e
                 return points;
             };
 
-            const importedLoops = geometry.loops.map(loop => pathPoints(loop.segments)).filter(points => points.length >= 3);
+            const loopEntries = geometry.loops.map(loop => ({
+                id: loop.id,
+                points: pathPoints(loop.segments)
+            })).filter(entry => entry.points.length >= 3);
+            const importedLoops = loopEntries.map(entry => entry.points);
             if (!importedLoops.length && !geometry.openPaths.length && !geometry.circles.length) {
                 throw new Error('В SVG не найдена поддерживаемая векторная геометрия');
             }
@@ -3097,10 +3101,7 @@ document.getElementById('inp-ornament-svg')?.addEventListener('change', async (e
             drawContours = importedLoops.length ? importedLoops : [[]];
             activeContourIndex = 0;
             contourHoles.clear();
-            const loopIndexById = new Map();
-            geometry.loops.forEach((loop, index) => {
-                if (importedLoops[index]) loopIndexById.set(loop.id, index);
-            });
+            const loopIndexById = new Map(loopEntries.map((entry, index) => [entry.id, index]));
             geometry.regions.forEach(region => {
                 (region.islands || []).forEach(island => {
                     const index = loopIndexById.get(island.id);
