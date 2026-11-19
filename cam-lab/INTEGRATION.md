@@ -38,3 +38,21 @@ Add native editable vector entities (including analytic arcs and circles), selec
 `window.CNCVectorCAM.parseSvg(svgText)` returns counts plus the full parsed geometry. `window.CNCVectorGeometry` is set to the last imported SVG geometry by `index27.html`.
 
 The bridge is a prototype; it has not yet been run in the user's local checkout after these changes.
+
+## Local smoke-test fixtures
+
+Use these files in the SVG import panel:
+
+- `test-fixtures/vector-smoke-test.svg`: one closed rectangle, one open polyline and one circle.
+- `test-fixtures/circle-only.svg`: checks that a circle is valid geometry even without loops or open paths.
+- `test-fixtures/nested-regions.svg`: checks an outer contour and an inner island/hole.
+- `test-fixtures/arcs.svg`: checks an SVG arc plus a separate open rectangular path.
+
+Expected behavior:
+1. The smoke test displays the rectangle as an editable closed contour, and the polyline/circle as separate 2D overlays.
+2. The circle-only file imports without an empty-geometry error and displays a circle without creating an empty 3D cut.
+3. The nested file preserves outer/island classification as far as the current polygon editor supports it.
+4. The arcs file displays the arc tessellated in the current editor; native analytic arc editing is not yet implemented.
+5. Save a `.cncpro` project, reload it, and confirm open paths/circles remain visible. Undo/redo should restore the vector overlay too.
+
+Do not treat these smoke tests as validation of machine toolpaths or G-code.
