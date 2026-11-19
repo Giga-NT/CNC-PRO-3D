@@ -3701,7 +3701,7 @@ function showContourIn3D() {
 
         let extrudeDepth, positionZ;
         if (type === 'normal') {
-            extrudeDepth = getCutDepthMeters();
+            extrudeDepth = computeNormalCutExtrudeDepth();
             positionZ = computeNormalCutZCenter();
         } else {
             extrudeDepth = computeFrameExtrudeDepth();
@@ -3802,7 +3802,7 @@ function showAllContoursIn3D() {
 
     let extrudeDepth, positionZ;
     if (type === 'normal') {
-        extrudeDepth = getCutDepthMeters();
+        extrudeDepth = computeNormalCutExtrudeDepth();
         positionZ = computeNormalCutZCenter();
     } else {
         extrudeDepth = computeFrameExtrudeDepth();
