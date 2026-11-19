@@ -3103,11 +3103,51 @@ document.getElementById('inp-ornament-svg')?.addEventListener('change', async (e
                 points: pathPoints(loop.segments)
             })).filter(entry => entry.points.length >= 3);
             const importedLoops = loopEntries.map(entry => entry.points);
-            if (!importedLoops.length && !geometry.openPaths.length && !geometry.circles.length) {
+            const importedOpenPaths = geometry.openPaths.map(pathPoints).filter(points => points.length >= 2);
+
+            // Convert each open SVG stroke into a closed cutter footprint. The existing
+            // CSG engine cuts closed profiles, so a polyline is expanded by half the
+            // configured groove width on both sides (with bounded miters at corners).
+            const openPathWidthPx = Math.max(0.4, getCutWidthMeters() * 200);
+            const strokeOpenPath = (points, widthPx) => {
+                const half = widthPx / 2;
+                const sidePoints = sign => points.map((point, index) => {
+                    const prev = points[Math.max(0, index - 1)];
+                    const next = points[Math.min(points.length - 1, index + 1)];
+                    const dx = next.x - prev.x, dy = next.y - prev.y;
+                    const length = Math.hypot(dx, dy);
+                    if (length < 1e-6) return null;
+                    const normal = { x: -dy / length * sign, y: dx / length * sign };
+                    if (index === 0 || index === points.length - 1) {
+                        return { x: point.x + normal.x * half, y: point.y + normal.y * half };
+                    }
+                    const pPrev = points[index - 1], pNext = points[index + 1];
+                    const l1 = Math.hypot(point.x - pPrev.x, point.y - pPrev.y) || 1;
+                    const l2 = Math.hypot(pNext.x - point.x, pNext.y - point.y) || 1;
+                    const n1 = { x: -(point.y - pPrev.y) / l1 * sign, y: (point.x - pPrev.x) / l1 * sign };
+                    const n2 = { x: -(pNext.y - point.y) / l2 * sign, y: (pNext.x - point.x) / l2 * sign };
+                    let mx = n1.x + n2.x, my = n1.y + n2.y;
+                    const ml = Math.hypot(mx, my);
+                    if (ml < 1e-5) return { x: point.x + n2.x * half, y: point.y + n2.y * half };
+                    mx /= ml; my /= ml;
+                    const denom = mx * n2.x + my * n2.y;
+                    const miter = Math.min(half * 4, half / Math.max(0.25, denom));
+                    return { x: point.x + mx * miter, y: point.y + my * miter };
+                }).filter(Boolean);
+                const left = sidePoints(1), right = sidePoints(-1).reverse();
+                return left.length >= 2 && right.length >= 2 ? left.concat(right) : [];
+            };
+            const openPathCutContours = importedOpenPaths
+                .map(points => strokeOpenPath(points, openPathWidthPx))
+                .filter(points => points.length >= 3);
+            if (!importedLoops.length && !openPathCutContours.length && !geometry.circles.length) {
                 throw new Error('В SVG не найдена поддерживаемая векторная геометрия');
             }
             pushDrawUndo();
-            drawContours = importedLoops.length ? importedLoops : [[]];
+            // CAM-detected circles are also represented as closed loops when the
+            // detector can resolve them; avoid adding a duplicate circle cutter here.
+            drawContours = [...importedLoops, ...openPathCutContours];
+            if (!drawContours.length) drawContours = [[]];
             activeContourIndex = 0;
             contourHoles.clear();
             const loopIndexById = new Map(loopEntries.map((entry, index) => [entry.id, index]));
@@ -3118,7 +3158,7 @@ document.getElementById('inp-ornament-svg')?.addEventListener('change', async (e
                 });
             });
             vectorOverlay = {
-                openPaths: geometry.openPaths.map(pathPoints).filter(points => points.length >= 2),
+                openPaths: importedOpenPaths,
                 circles: geometry.circles.map(circle => ({
                     center: mapPoint(circle.center),
                     radius: circle.radius * scale
@@ -3136,7 +3176,7 @@ document.getElementById('inp-ornament-svg')?.addEventListener('change', async (e
             redrawDrawCanvas();
             if (importedLoops.length) showAllContoursIn3D();
             else clearCutPreview();
-            setStatus(`SVG импортирован векторно: ${importedLoops.length} контуров, ${vectorOverlay.openPaths.length} открытых путей, ${vectorOverlay.circles.length} окружностей. Открытые пути и окружности пока доступны только в 2D-превью.`);
+            setStatus(`SVG CAM: ${importedLoops.length} замкнутых контуров + ${openPathCutContours.length} открытых траекторий преобразованы в режущие области; окружностей: ${vectorOverlay.circles.length}. Для обработки нажмите «Гравировать / вырезать все контуры».`);
             return;
         }
 
