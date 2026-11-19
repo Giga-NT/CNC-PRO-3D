@@ -1,5 +1,5 @@
-import { processSvg } from './engine/dxf/contourDetector';
-import type { ParsedGeometry } from './engine/geometry/types';
+import { processSvg } from './engine/src/engine/dxf/contourDetector';
+import type { ParsedGeometry } from './engine/src/engine/geometry/types';
 
 export interface CNCVectorImportSummary {
   units: 'mm';
