@@ -542,7 +542,7 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
         <div class="btn-row" style="margin-top: 5px;">
             <button id="btn-draw-clear" class="danger">🗑️ Сброс всех</button>
             <button id="btn-draw-finish" class="success" disabled>✅ Показать 3D</button>
-            <button id="btn-draw-finish-all" class="success" disabled>✅ Показать все</button>
+            <button id="btn-draw-finish-all" class="success" disabled>👁 Предпросмотр всех контуров</button>
         </div>
 
         <div class="checkbox-row">
@@ -584,12 +584,12 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
                 <option value="outside">Снаружи фигуры</option>
             </select>
 
-            <label>Ширина шва: <span class="val" id="val-cut-width">0.030</span> м</label>
-            <input type="range" id="inp-cut-width" min="0.002" max="0.100" step="0.001" value="0.030">
+            <label>Ширина шва: <span class="val" id="val-cut-width">30.0</span> мм</label>
+            <input type="range" id="inp-cut-width" min="0.2" max="100" step="0.1" value="30">
 
             <div id="outer-frame-options" style="display:none;">
-                <label>Зазор от фигуры: <span class="val" id="val-frame-gap">0.005</span> м</label>
-                <input type="range" id="inp-frame-gap" min="0" max="0.050" step="0.001" value="0.005">
+                <label>Зазор от фигуры: <span class="val" id="val-frame-gap">5.0</span> мм</label>
+                <input type="range" id="inp-frame-gap" min="0" max="50" step="0.1" value="5">
             </div>
 
             <label>Профиль шва:</label>
@@ -618,7 +618,7 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
 
         <div class="btn-row" style="margin-top:8px;">
             <button id="btn-cut" class="danger">✂️ Вырезать контур</button>
-            <button id="btn-cut-all" class="danger">✂️ Вырезать все контуры</button>
+            <button id="btn-cut-all" class="danger">✂️ Гравировать / вырезать все контуры</button>
             <button id="btn-reset-mesh">↺ Сброс модели</button>
             <button id="btn-undo" disabled>↶ Отменить</button>
         </div>
@@ -3236,6 +3236,14 @@ function getCutBevelSizeMeters() {
     return readSlider('inp-cut-bevel', 3) / 1000;
 }
 
+function getCutWidthMeters() {
+    return readSlider('inp-cut-width', 30) / 1000;
+}
+
+function getFrameGapMeters() {
+    return readSlider('inp-frame-gap', 5) / 1000;
+}
+
 function computeNormalCutZCenter() {
     const cd = getCutDepthMeters();
     const czo = readSlider('inp-czo', 0);
@@ -3422,8 +3430,8 @@ function frameCenterlineMeters(pointsPx, widthM, gapM, side) {
 
 function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
     const profile = document.getElementById('sel-cut-profile')?.value || 'rectangular';
-    const widthM = readSlider('inp-cut-width', 0.030);
-    const gapM = readSlider('inp-frame-gap', 0.005);
+    const widthM = getCutWidthMeters();
+    const gapM = getFrameGapMeters();
     const side = document.getElementById('sel-frame-side')?.value || 'inside';
     if (!(widthM > 0) || !(depth > 0)) throw new Error('Ширина и глубина шва должны быть больше нуля');
 
@@ -3518,8 +3526,8 @@ function computeFrameFinishZCenter(depth) {
 }
 
 function framePreviewRails(pointsPx) {
-    const widthM = readSlider('inp-cut-width', 0.030);
-    const gapM = readSlider('inp-frame-gap', 0.005);
+    const widthM = getCutWidthMeters();
+    const gapM = getFrameGapMeters();
     const side = document.getElementById('sel-frame-side')?.value || 'inside';
     const center = frameCenterlineMeters(pointsPx, widthM, gapM, side);
     const a = offsetClosedPath(center, widthM / 2);
@@ -3678,19 +3686,22 @@ function generatePatternInstances(baseX, baseY, baseRot) {
    ============================================================ */
 
 let previewScheduled = false;
+let allContoursPreviewActive = false;
 function schedulePreview() {
     if (previewScheduled) return;
     previewScheduled = true;
     requestAnimationFrame(() => {
         previewScheduled = false;
         if (drawPoints.length >= 3 && (cutPreviewMesh || cutPreviewGroup)) {
-            showContourIn3D();
+            if (allContoursPreviewActive) showAllContoursIn3D();
+            else showContourIn3D();
         }
     });
 }
 
 function showContourIn3D() {
     if (drawPoints.length < 3) return;
+    allContoursPreviewActive = false;
     clearCutPreview();
 
     try {
@@ -3793,6 +3804,7 @@ function showContourIn3D() {
 function showAllContoursIn3D() {
     document.getElementById('csg-tools')?.classList.remove('collapsed');
     clearCutPreview();
+    allContoursPreviewActive = true;
     const groups = groupContoursWithHoles();
     if (!groups.length) return setStatus('⚠️ Нет валидных контуров');
 
@@ -3856,7 +3868,7 @@ document.getElementById('btn-draw-finish-all').addEventListener('click', () => {
     el.addEventListener('input', () => {
         const v = document.getElementById(id.replace('inp-', 'val-'));
         if (v) {
-            if (id === 'inp-cut-bevel') v.textContent = parseFloat(el.value).toFixed(1);
+            if (id === 'inp-cut-bevel' || id === 'inp-cut-width' || id === 'inp-frame-gap') v.textContent = Number(el.value).toFixed(1);
             else v.textContent = Number(el.value).toFixed(3);
         }
         redrawDrawCanvas();
