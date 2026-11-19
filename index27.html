@@ -2397,7 +2397,10 @@ function redrawDrawCanvas() {
             }
         }
 
-        if (isActive || drawMode === 'eraser') {
+        // Vertex handles are useful for hand-drawn polygons, but on imported SVG
+        // curves they turn a smooth circle/arc into a row of oversized dots.
+        // Keep handles for small editable contours; dense imported paths stay clean.
+        if ((isActive || drawMode === 'eraser') && contour.length <= 12) {
             for (let i = 0; i < contour.length; i++) {
                 const p = contour[i];
                 drawCtx.beginPath();
