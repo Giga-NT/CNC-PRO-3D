@@ -500,6 +500,13 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
             </div>
             <div class="btn-row">
                 <div class="file-input-wrapper"><button>📥 Загрузить орнамент SVG</button><input type="file" id="inp-ornament-svg" accept=".svg,image/svg+xml"></div>
+            <label style="display:flex;align-items:center;gap:6px;font-size:11px;margin-top:5px;">
+                Режим SVG:
+                <select id="sel-svg-import-mode" style="flex:1;">
+                    <option value="vector" selected>Векторный (основной)</option>
+                    <option value="raster">Растровый (резервный)</option>
+                </select>
+            </label>
             </div>
             <div class="draw-instructions">Готовые мотивы — замкнутые векторные контуры. Для сложных узоров используйте SVG: контуры импортируются для реального 3D-вырезания, а не как картинка.</div>
         </div>
@@ -2106,6 +2113,8 @@ const drawCtx = drawCanvas.getContext('2d');
 
 let drawContours = [[]];
 let activeContourIndex = 0;
+// CAM entities that are intentionally not converted into closed cutting polygons.
+let vectorOverlay = { openPaths: [], circles: [] };
 let drawPoints = [];
 // View transform: geometry stays in original canvas coordinates; only its presentation is zoomed.
 let drawViewScale = 1, drawViewX = 0, drawViewY = 0;
@@ -2401,6 +2410,29 @@ function redrawDrawCanvas() {
             }
         }
     });
+
+    // CAM-векторные сущности, не являющиеся замкнутыми полигонами редактора.
+    if (vectorOverlay.openPaths.length || vectorOverlay.circles.length) {
+        drawCtx.save();
+        drawCtx.lineWidth = 1.8;
+        drawCtx.lineCap = 'round';
+        drawCtx.lineJoin = 'round';
+        drawCtx.strokeStyle = '#ffb74d';
+        vectorOverlay.openPaths.forEach(path => {
+            if (!path.length) return;
+            drawCtx.beginPath();
+            drawCtx.moveTo(path[0].x, path[0].y);
+            for (let i = 1; i < path.length; i++) drawCtx.lineTo(path[i].x, path[i].y);
+            drawCtx.stroke();
+        });
+        drawCtx.strokeStyle = '#b39ddb';
+        vectorOverlay.circles.forEach(circle => {
+            drawCtx.beginPath();
+            drawCtx.arc(circle.center.x, circle.center.y, circle.radius, 0, Math.PI * 2);
+            drawCtx.stroke();
+        });
+        drawCtx.restore();
+    }
 
     // Превью шва использует те же реальные смещённые границы, что и 3D cutter.
     const cutType = document.getElementById('sel-cut-type')?.value;
@@ -3006,6 +3038,97 @@ document.getElementById('inp-ornament-svg')?.addEventListener('change', async (e
             vb = [0, 0, w, h];
         }
         const [vx, vy, vw, vh] = vb;
+
+        // Primary path: keep CAM geometry analytic where possible. Closed loops enter
+        // the existing polygon editor; open paths and circles remain separate overlays.
+        const importMode = document.getElementById('sel-svg-import-mode')?.value || 'vector';
+        if (importMode === 'vector' && vectorImport?.geometry) {
+            const geometry = vectorImport.geometry;
+            const bounds = geometry.bounds;
+            if (!bounds || ![bounds.minX, bounds.minY, bounds.maxX, bounds.maxY].every(Number.isFinite)) {
+                throw new Error('CAM вернул некорректные границы геометрии');
+            }
+            const spanX = Math.max(1e-6, bounds.maxX - bounds.minX);
+            const spanY = Math.max(1e-6, bounds.maxY - bounds.minY);
+            const margin = 24;
+            const scale = Math.min((drawCanvas.width - margin * 2) / spanX, (drawCanvas.height - margin * 2) / spanY);
+            const offsetX = (drawCanvas.width - spanX * scale) / 2;
+            const offsetY = (drawCanvas.height - spanY * scale) / 2;
+            const mapPoint = p => ({
+                x: offsetX + (p.x - bounds.minX) * scale,
+                y: drawCanvas.height - (offsetY + (p.y - bounds.minY) * scale)
+            });
+            const segmentPoints = segment => {
+                if (segment.type !== 'arc') return [mapPoint(segment.start), mapPoint(segment.end)];
+                const rawDelta = segment.endAngle - segment.startAngle;
+                let delta = rawDelta;
+                if (segment.clockwise && delta > 0) delta -= Math.PI * 2;
+                if (!segment.clockwise && delta < 0) delta += Math.PI * 2;
+                const steps = Math.max(8, Math.min(96, Math.ceil(Math.abs(delta) * 12)));
+                const points = [];
+                for (let i = 0; i <= steps; i++) {
+                    const angle = segment.startAngle + delta * i / steps;
+                    points.push(mapPoint({
+                        x: segment.center.x + Math.cos(angle) * segment.radius,
+                        y: segment.center.y + Math.sin(angle) * segment.radius
+                    }));
+                }
+                return points;
+            };
+            const pathPoints = segments => {
+                const points = [];
+                segments.forEach((segment, index) => {
+                    const part = segmentPoints(segment);
+                    if (index && points.length) part.shift();
+                    points.push(...part);
+                });
+                if (points.length > 1) {
+                    const a = points[0], b = points[points.length - 1];
+                    if (Math.hypot(a.x - b.x, a.y - b.y) < 0.01) points.pop();
+                }
+                return points;
+            };
+
+            const importedLoops = geometry.loops.map(loop => pathPoints(loop.segments)).filter(points => points.length >= 3);
+            if (!importedLoops.length && !geometry.openPaths.length && !geometry.circles.length) {
+                throw new Error('В SVG не найдена поддерживаемая векторная геометрия');
+            }
+            pushDrawUndo();
+            drawContours = importedLoops.length ? importedLoops : [[]];
+            activeContourIndex = 0;
+            contourHoles.clear();
+            const loopIndexById = new Map();
+            geometry.loops.forEach((loop, index) => {
+                if (importedLoops[index]) loopIndexById.set(loop.id, index);
+            });
+            geometry.regions.forEach(region => {
+                (region.islands || []).forEach(island => {
+                    const index = loopIndexById.get(island.id);
+                    if (index !== undefined) contourHoles.add(index);
+                });
+            });
+            vectorOverlay = {
+                openPaths: geometry.openPaths.map(pathPoints).filter(points => points.length >= 2),
+                circles: geometry.circles.map(circle => ({
+                    center: mapPoint(circle.center),
+                    radius: circle.radius * scale
+                }))
+            };
+            const cutType = document.getElementById('sel-cut-type');
+            if (cutType && importedLoops.length) {
+                cutType.value = 'normal';
+                cutType.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            activeParametricArea = null;
+            refreshDrawPointsRef();
+            document.getElementById('btn-draw-finish').disabled = drawPoints.length < 3;
+            document.getElementById('btn-draw-finish-all').disabled = !drawContours.some(c => c.length >= 3);
+            showAllContoursIn3D();
+            setStatus(`SVG импортирован векторно: ${importedLoops.length} контуров, ${vectorOverlay.openPaths.length} открытых путей, ${vectorOverlay.circles.length} окружностей. Открытые пути и окружности пока доступны только в 2D-превью.`);
+            return;
+        }
+
+        vectorOverlay = { openPaths: [], circles: [] };
 
         // Browser SVG renderer handles path commands, transforms, strokes, fills,
         // polylines and open paths; no manual path-type filtering is needed.
