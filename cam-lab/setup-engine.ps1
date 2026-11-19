@@ -44,12 +44,16 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "npm ci failed while installing CAM dependencies." }
 
     npm run build
-    if ($LASTEXITCODE -ne 0) { throw "The CAM production build failed." }
+    if ($LASTEXITCODE -ne 0) { throw "The upstream CAM production build failed." }
+
+    npx vite build --config ../vite.bridge.config.js
+    if ($LASTEXITCODE -ne 0) { throw "The CNC vector bridge build failed." }
 } finally {
     Pop-Location
 }
 
-Write-Host "CAM engine installed and production build completed."
+Write-Host "CAM engine and CNC vector bridge built successfully."
+Write-Host "Bridge bundle: cam-lab/dist/cnc-vector-cam.js"
 Write-Host "To start the development server, run:"
 Write-Host "  cd `"$engineDir`""
 Write-Host "  npm run dev"
