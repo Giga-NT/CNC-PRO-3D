@@ -2655,37 +2655,52 @@ drawCanvas.addEventListener('pointerup', () => {
             setStatus('Ластик: проведите линию длиннее');
             return;
         }
-        const hole = buildStrokeOutline(path, Math.max(2, readSlider('inp-brush', 6)) / 2);
-        // Check the complete eraser boundary, not just its vertices. A long
-        // segment can leave the source contour even when both endpoints are inside.
-        const polygonIsInside = (inner, outer) => {
-            for (let i = 0; i < inner.length; i++) {
-                const a = inner[i], b = inner[(i + 1) % inner.length];
-                const steps = Math.max(1, Math.ceil(Math.hypot(b.x-a.x, b.y-a.y) / 3));
-                for (let k = 0; k <= steps; k++) {
-                    const t = k / steps;
-                    if (!pointInPolygon({ x:a.x+(b.x-a.x)*t, y:a.y+(b.y-a.y)*t }, outer)) return false;
+        try {
+            const result = subtractStrokeFromContour(
+                target,
+                path,
+                Math.max(2, readSlider('inp-brush', 6)) / 2
+            );
+            if (!result || !Array.isArray(result.contours)) {
+                throw new Error('Clipper не вернул результат вычитания');
+            }
+
+            // Rebuild contour indices while preserving every untouched contour
+            // and its hole flag. The difference may produce several solid parts.
+            const nextContours = [];
+            const nextHoles = new Set();
+            let firstResultSolid = -1;
+            for (let i = 0; i < drawContours.length; i++) {
+                if (i === targetIndex) {
+                    for (let j = 0; j < result.contours.length; j++) {
+                        const newIndex = nextContours.length;
+                        nextContours.push(result.contours[j]);
+                        if (result.holes.has(j)) nextHoles.add(newIndex);
+                        else if (firstResultSolid < 0) firstResultSolid = newIndex;
+                    }
+                } else {
+                    const newIndex = nextContours.length;
+                    nextContours.push(drawContours[i]);
+                    if (contourHoles.has(i)) nextHoles.add(newIndex);
                 }
             }
-            return true;
-        };
-        const inside = polygonIsInside(hole, target);
-        const overlapsOtherSolid = drawContours.some((c, ci) =>
-            ci !== targetIndex && c.length >= 3 && !contourHoles.has(ci) &&
-            (hole.some(p => pointInPolygon(p, c)) || c.some(p => pointInPolygon(p, hole)))
-        );
-        if (!inside || overlapsOtherSolid) {
+
+            drawContours = nextContours;
+            contourHoles = nextHoles;
+            activeContourIndex = firstResultSolid >= 0
+                ? firstResultSolid
+                : Math.min(targetIndex, Math.max(0, drawContours.length - 1));
+            refreshDrawPointsRef();
+            schedulePreview();
+            setStatus(result.contours.length
+                ? '🧹 Материал удалён. Ctrl+Z отменяет операцию.'
+                : '🧹 Контур полностью удалён. Ctrl+Z отменяет операцию.');
+        } catch (err) {
             drawUndoStack.pop();
             redrawDrawCanvas();
-            setStatus('Ластик пока вырезает только участок целиком внутри контура. Для вырезания от края нужен отдельный режим.');
-            return;
+            console.error('Eraser boolean difference failed:', err);
+            setStatus('Ластик: ошибка геометрического вычитания — ' + (err?.message || err));
         }
-        const holeIndex = drawContours.length;
-        drawContours.push(hole);
-        contourHoles.add(holeIndex);
-        refreshDrawPointsRef();
-        schedulePreview();
-        setStatus('🧹 Область удалена. Это отверстие в контуре; Ctrl+Z отменяет операцию.');
         return;
     }
     if (!isDrawing || drawMode !== 'brush') return;
@@ -2736,6 +2751,65 @@ drawCanvas.addEventListener('pointerleave', () => {
 });
 
 /* ---- PATH HELPERS ---- */
+
+function subtractStrokeFromContour(contour, strokePath, radius) {
+    if (!window.ClipperLib) throw new Error('ClipperLib не загружена');
+    const CL = window.ClipperLib;
+    const SCALE = 1000;
+    const toIntPath = points => points.map(p => ({
+        X: Math.round(p.x * SCALE),
+        Y: Math.round(p.y * SCALE)
+    }));
+    const toFloatPath = points => points.map(p => ({
+        x: p.X / SCALE,
+        y: p.Y / SCALE
+    }));
+
+    const centerline = simplifyPath(strokePath, 0.75);
+    if (centerline.length < 2) throw new Error('Слишком короткий проход ластика');
+
+    // Build a true round-ended cutter from the open pointer path.
+    const offsetter = new CL.ClipperOffset(2, Math.max(0.25, radius * SCALE * 0.25));
+    offsetter.AddPath(
+        toIntPath(centerline),
+        CL.JoinType.jtRound,
+        CL.EndType.etOpenRound
+    );
+    const cutter = new CL.Paths();
+    offsetter.Execute(cutter, radius * SCALE);
+    if (!cutter.length) throw new Error('Не удалось построить область ластика');
+
+    const clipper = new CL.Clipper();
+    clipper.StrictlySimple = true;
+    clipper.AddPath(toIntPath(contour), CL.PolyType.ptSubject, true);
+    clipper.AddPaths(cutter, CL.PolyType.ptClip, true);
+
+    const tree = new CL.PolyTree();
+    const ok = clipper.Execute(
+        CL.ClipType.ctDifference,
+        tree,
+        CL.PolyFillType.pftEvenOdd,
+        CL.PolyFillType.pftEvenOdd
+    );
+    if (!ok) throw new Error('Clipper не смог выполнить Difference');
+
+    const contours = [];
+    const holes = new Set();
+    const visit = node => {
+        const polygon = node.Contour();
+        if (polygon && polygon.length >= 3) {
+            const index = contours.length;
+            contours.push(toFloatPath(polygon));
+            if (node.IsHole()) holes.add(index);
+        }
+        const children = node.Childs();
+        for (let i = 0; i < children.length; i++) visit(children[i]);
+    };
+    const roots = tree.Childs();
+    for (let i = 0; i < roots.length; i++) visit(roots[i]);
+
+    return { contours, holes };
+}
 
 function buildStrokeOutline(path, radius) {
     if (path.length < 2) return [];
