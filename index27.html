@@ -1304,9 +1304,9 @@ function popUndoState() {
 }
 
 function createStellaBrush() {
-    let geometry = stellaMesh.geometry.clone();
-    geometry = normalizeForCSG(geometry, 0, true);
-    geometry.computeVertexNormals();
+    // normalizeForCSG сам создаёт рабочую геометрию (clone/toNonIndexed);
+    // предварительный clone и повторный computeVertexNormals были лишними.
+    const geometry = normalizeForCSG(stellaMesh.geometry, 0, true);
 
     const brush = new Brush(geometry);
     brush.material = getCSGMaterials();
@@ -4433,18 +4433,22 @@ document.getElementById('btn-undo').addEventListener('click', () => {
    24. CSG OPERATIONS
    ============================================================ */
 
-function runCSG(cutters, label, onSuccess, operation = null) {
+async function runCSG(cutters, label, onSuccess, operation = null) {
     if (!csgAvailable || !stellaMesh) return false;
     const op = operation || SUBTRACTION;
 
-    showLoading(true, label);
+    showLoading(true, 'Подготовка к вычитанию…');
+    // Даём браузеру отрисовать экран загрузки до тяжёлого синхронного CSG.
+    await new Promise(resolve => requestAnimationFrame(() => resolve()));
     pushUndo();
 
     let brush = null;
     try {
+        showLoading(true, 'Построение BVH и подготовка модели…');
         brush = createStellaBrush();
         let success = 0;
 
+        showLoading(true, 'Вычитание контура из заготовки…');
         cutters.forEach((c, idx) => {
             let nextBrush = null;
             try {
