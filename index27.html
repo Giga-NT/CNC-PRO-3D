@@ -2593,7 +2593,21 @@ drawCanvas.addEventListener('pointermove', e => {
 
     if (isDrawing && drawMode === 'eraser') {
         const last = erasePath[erasePath.length - 1];
-        if (!last || Math.hypot(pos.x-last.x, pos.y-last.y) >= 2) erasePath.push(pos);
+        if (!last) {
+            erasePath.push({ x: pos.x, y: pos.y });
+        } else {
+            // Интерполируем быстрые движения мыши, чтобы между событиями pointermove
+            // не оставались непротёртые промежутки.
+            const distance = Math.hypot(pos.x - last.x, pos.y - last.y);
+            const steps = Math.max(1, Math.ceil(distance / 1));
+            for (let i = 1; i <= steps; i++) {
+                const t = i / steps;
+                erasePath.push({
+                    x: last.x + (pos.x - last.x) * t,
+                    y: last.y + (pos.y - last.y) * t
+                });
+            }
+        }
         redrawDrawCanvas();
         return;
     }
@@ -2756,7 +2770,7 @@ drawCanvas.addEventListener('pointerleave', () => {
 function subtractStrokeFromContour(contour, strokePath, radius) {
     if (!window.ClipperLib) throw new Error('ClipperLib не загружена');
     const CL = window.ClipperLib;
-    const SCALE = 1000;
+    const SCALE = 10000;
     const toIntPath = points => points.map(p => ({
         X: Math.round(p.x * SCALE),
         Y: Math.round(p.y * SCALE)
@@ -2766,11 +2780,12 @@ function subtractStrokeFromContour(contour, strokePath, radius) {
         y: p.Y / SCALE
     }));
 
-    const centerline = simplifyPath(strokePath, 0.75);
+    // Сохраняем мелкие повороты прохода: грубое упрощение давало островки материала.
+    const centerline = simplifyPath(strokePath, 0.2);
     if (centerline.length < 2) throw new Error('Слишком короткий проход ластика');
 
     // Build a true round-ended cutter from the open pointer path.
-    const offsetter = new CL.ClipperOffset(2, Math.max(0.25, radius * SCALE * 0.25));
+    const offsetter = new CL.ClipperOffset(2, Math.max(0.25, radius * SCALE * 0.05));
     offsetter.AddPath(
         toIntPath(centerline),
         CL.JoinType.jtRound,
