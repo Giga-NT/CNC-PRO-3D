@@ -2140,6 +2140,8 @@ let contourHoles = new Set();   // индексы контуров, помече
 let drawMode = 'poly';
 let isDrawing = false;
 let brushPath = [];
+let erasePath = [];
+let eraseTargetContour = -1;
 let dragPointIndex = -1;
 let hoverPointIndex = -1;
 let isDraggingContour = false;
@@ -2426,15 +2428,18 @@ function redrawDrawCanvas() {
         }
     }
 
-    if (isDrawing && brushPath.length >= 2) {
-        drawCtx.beginPath();
-        drawCtx.moveTo(brushPath[0].x, brushPath[0].y);
-        for (let i = 1; i < brushPath.length; i++) drawCtx.lineTo(brushPath[i].x, brushPath[i].y);
-        drawCtx.strokeStyle = '#ffcc00';
-        drawCtx.lineWidth = readSlider('inp-brush', 6);
-        drawCtx.lineCap = 'round';
-        drawCtx.lineJoin = 'round';
-        drawCtx.stroke();
+    if (isDrawing && (drawMode === 'brush' || drawMode === 'eraser')) {
+        const path = drawMode === 'eraser' ? erasePath : brushPath;
+        if (path.length >= 2) {
+            drawCtx.beginPath();
+            drawCtx.moveTo(path[0].x, path[0].y);
+            for (let i = 1; i < path.length; i++) drawCtx.lineTo(path[i].x, path[i].y);
+            drawCtx.strokeStyle = drawMode === 'eraser' ? 'rgba(255,70,70,0.85)' : '#ffcc00';
+            drawCtx.lineWidth = readSlider('inp-brush', 6);
+            drawCtx.lineCap = 'round';
+            drawCtx.lineJoin = 'round';
+            drawCtx.stroke();
+        }
     }
 
     drawCtx.restore();
@@ -2480,21 +2485,19 @@ drawCanvas.addEventListener('pointerdown', e => {
     const hitIdx = findPointNear(pos);
 
     if (drawMode === 'eraser') {
-        const eraseHit = findPointNearAnyContour(pos);
-        if (eraseHit) {
-            pushDrawUndo();
-            const targetContour = drawContours[eraseHit.contourIndex];
-            targetContour.splice(eraseHit.pointIndex, 1);
-            dragPointIndex = -1;
-            hoverPointIndex = -1;
-            refreshDrawPointsRef();
-            if (cutPreviewMesh || cutPreviewGroup) {
-                const hasValidContours = drawContours.some(c => c && c.length >= 3);
-                if (allContoursPreviewActive ? hasValidContours : drawPoints.length >= 3) schedulePreview();
-                else clearCutPreview();
-            }
-            setStatus(`🗑️ Удалена точка ${eraseHit.pointIndex + 1} в контуре ${eraseHit.contourIndex + 1}`);
-        } else setStatus('🧹 Наведите на точку любого контура для удаления');
+        const target = findContourAtPoint(pos);
+        if (target < 0 || contourHoles.has(target)) {
+            setStatus('Ластик: начните внутри сплошной области контура');
+            return;
+        }
+        pushDrawUndo();
+        activeContourIndex = target;
+        syncActiveContour();
+        eraseTargetContour = target;
+        erasePath = [pos];
+        isDrawing = true;
+        redrawDrawCanvas();
+        setStatus('🧹 Ведите мышью по области, которую нужно удалить');
         return;
     }
 
@@ -2572,6 +2575,12 @@ drawCanvas.addEventListener('pointermove', e => {
         return;
     }
 
+    if (isDrawing && drawMode === 'eraser') {
+        const last = erasePath[erasePath.length - 1];
+        if (!last || Math.hypot(pos.x-last.x, pos.y-last.y) >= 2) erasePath.push(pos);
+        redrawDrawCanvas();
+        return;
+    }
     if (isDrawing && drawMode === 'brush') {
         brushPath.push({ x: pos.x, y: pos.y });
         redrawDrawCanvas();
@@ -2609,6 +2618,34 @@ drawCanvas.addEventListener('pointerup', () => {
         return;
     }
 
+    if (isDrawing && drawMode === 'eraser') {
+        isDrawing = false;
+        const target = drawContours[eraseTargetContour];
+        const path = erasePath.slice();
+        erasePath = [];
+        const targetIndex = eraseTargetContour;
+        eraseTargetContour = -1;
+        if (!target || target.length < 3 || path.length < 2) {
+            drawUndoStack.pop(); redrawDrawCanvas();
+            setStatus('Ластик: проведите линию длиннее');
+            return;
+        }
+        const hole = buildStrokeOutline(path, Math.max(2, readSlider('inp-brush', 6)) / 2);
+        const inside = hole.every(p => pointInPolygon(p, target));
+        if (!inside || hole.some(p => drawContours.some((c, ci) => ci !== targetIndex && c.length >= 3 && !contourHoles.has(ci) && pointInPolygon(p, c)))) {
+            drawUndoStack.pop();
+            redrawDrawCanvas();
+            setStatus('Ластик пока вырезает только участок целиком внутри контура. Для вырезания от края нужен отдельный режим.');
+            return;
+        }
+        const holeIndex = drawContours.length;
+        drawContours.push(hole);
+        contourHoles.add(holeIndex);
+        refreshDrawPointsRef();
+        schedulePreview();
+        setStatus('🧹 Область удалена. Это отверстие в контуре; Ctrl+Z отменяет операцию.');
+        return;
+    }
     if (!isDrawing || drawMode !== 'brush') return;
     isDrawing = false;
 
@@ -2647,6 +2684,7 @@ drawCanvas.addEventListener('pointerup', () => {
 
 drawCanvas.addEventListener('pointerleave', () => {
     if (isDrawing && drawMode === 'brush') { isDrawing = false; brushPath = []; redrawDrawCanvas(); }
+    if (isDrawing && drawMode === 'eraser') { isDrawing = false; erasePath = []; eraseTargetContour = -1; redrawDrawCanvas(); }
     if (dragPointIndex >= 0) { dragPointIndex = -1; drawCanvas.style.cursor = 'crosshair'; redrawDrawCanvas(); }
     if (isDraggingContour) { isDraggingContour = false; dragContourStart = null; drawCanvas.style.cursor = 'crosshair'; redrawDrawCanvas(); }
     if (hoverPointIndex !== -1 || hoverContourIndex !== -1) {
@@ -2655,6 +2693,33 @@ drawCanvas.addEventListener('pointerleave', () => {
 });
 
 /* ---- PATH HELPERS ---- */
+
+function buildStrokeOutline(path, radius) {
+    if (path.length < 2) return [];
+    const left = [], right = [];
+    for (let i = 0; i < path.length; i++) {
+        const prev = path[Math.max(0, i - 1)], next = path[Math.min(path.length - 1, i + 1)];
+        const dx = next.x - prev.x, dy = next.y - prev.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const nx = -dy / len, ny = dx / len;
+        left.push({ x: path[i].x + nx * radius, y: path[i].y + ny * radius });
+        right.push({ x: path[i].x - nx * radius, y: path[i].y - ny * radius });
+    }
+    // Round end caps keep the erased channel smooth and closed.
+    const cap = (center, from, to, clockwise) => {
+        let a = Math.atan2(from.y-center.y, from.x-center.x);
+        let b = Math.atan2(to.y-center.y, to.x-center.x);
+        if (clockwise) { while (b > a) b -= Math.PI*2; }
+        else { while (b < a) b += Math.PI*2; }
+        const out=[];
+        const steps=8;
+        for(let i=1;i<steps;i++){ const t=a+(b-a)*i/steps; out.push({x:center.x+Math.cos(t)*radius,y:center.y+Math.sin(t)*radius}); }
+        return out;
+    };
+    const endCap = cap(path[path.length-1], left[left.length-1], right[right.length-1], true);
+    const startCap = cap(path[0], right[0], left[0], true);
+    return left.concat(endCap, right.reverse(), startCap);
+}
 
 function simplifyPath(points, tolerance) {
     if (points.length < 3) return points;
