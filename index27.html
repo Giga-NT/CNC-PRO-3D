@@ -3629,6 +3629,45 @@ function cleanClosedPath(points, tolerance = 0.0005) {
     return clean;
 }
 
+// Смещение с сохранением соответствия вершин исходного контура.
+// Каждая выходная точка строится на пересечении смещённых соседних рёбер;
+// никакого независимого пересэмплирования левой и правой стенок.
+function offsetClosedPathAligned(points, distance) {
+    const path = cleanClosedPath(points, 1e-8);
+    if (!Number.isFinite(distance)) throw new Error('Некорректное расстояние смещения контура');
+    if (Math.abs(distance) < 1e-12) return path.map(p => ({ x:p.x, y:p.y }));
+    const area = contourSignedArea(path);
+    if (Math.abs(area) < 1e-12) throw new Error('Нельзя сместить контур с нулевой площадью');
+    const n = path.length;
+    const result = [];
+    for (let i = 0; i < n; i++) {
+        const prev = path[(i + n - 1) % n], cur = path[i], next = path[(i + 1) % n];
+        const ax = cur.x - prev.x, ay = cur.y - prev.y;
+        const bx = next.x - cur.x, by = next.y - cur.y;
+        const al = Math.hypot(ax, ay), bl = Math.hypot(bx, by);
+        if (al < 1e-10 || bl < 1e-10) throw new Error('В контуре обнаружено слишком короткое ребро');
+        const an = { x:-ay/al, y:ax/al }, bn = { x:-by/bl, y:bx/bl };
+        const dot = Math.max(-1, Math.min(1, (ax*bx + ay*by)/(al*bl)));
+        const denom = 1 + dot;
+        if (denom < 1e-7) throw new Error('В контуре есть почти развёрнутый угол; невозможно надёжно построить шов');
+        const mx = (an.x + bn.x) / denom;
+        const my = (an.y + bn.y) / denom;
+        const miter = Math.hypot(mx, my);
+        if (!Number.isFinite(miter) || miter > 50) {
+            throw new Error('Слишком острый угол контура: смещение создаёт недопустимо длинный выступ');
+        }
+        result.push({ x:cur.x + mx*distance, y:cur.y + my*distance });
+    }
+    if (result.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
+        throw new Error('Смещение породило некорректные координаты');
+    }
+    if (Math.abs(contourSignedArea(result)) < 1e-12 ||
+        Math.sign(contourSignedArea(result)) !== Math.sign(area)) {
+        throw new Error('При заданной ширине смещённый контур схлопнулся или изменил направление. Уменьшите ширину шва');
+    }
+    return result;
+}
+
 function resampleClosedPath(points, count, referencePath = points) {
     if (!Array.isArray(points) || points.length < 3 || count < 3) {
         throw new Error('Недостаточно точек для построения смещённого контура');
@@ -3756,7 +3795,7 @@ function frameCenterlineMeters(pointsPx, widthM, gapM, side) {
     if (side === 'contour') return path;
     const inward = Math.sign(area);
     const shift = side === 'outside' ? -(gapM + widthM / 2) : widthM / 2;
-    return offsetClosedPath(path, inward * shift);
+    return offsetClosedPathAligned(path, inward * shift);
 }
 
 function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
@@ -3783,8 +3822,8 @@ function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
             halfWidth = widthM / 2 + extra * shapeFactor;
         } else if (profile === 'v') halfWidth = Math.max(0.00035, (widthM / 2) * (1 - t));
         else if (profile === 'u') halfWidth = Math.max(0.001, (widthM / 2) * Math.sqrt(Math.max(0, 1 - t * t)));
-        const leftLevel = offsetClosedPath(center, halfWidth);
-        const rightLevel = offsetClosedPath(center, -halfWidth);
+        const leftLevel = offsetClosedPathAligned(center, halfWidth);
+        const rightLevel = offsetClosedPathAligned(center, -halfWidth);
         if (leftLevel.length !== center.length || rightLevel.length !== center.length) {
             throw new Error('Несовпадение числа вершин в уровнях шва: центр=' + center.length +
                 ', левая сторона=' + leftLevel.length + ', правая сторона=' + rightLevel.length);
@@ -3867,8 +3906,8 @@ function framePreviewRails(pointsPx) {
     const gapM = getFrameGapMeters();
     const side = document.getElementById('sel-frame-side')?.value || 'inside';
     const center = frameCenterlineMeters(pointsPx, widthM, gapM, side);
-    const a = offsetClosedPath(center, widthM / 2);
-    const b = offsetClosedPath(center, -widthM / 2);
+    const a = offsetClosedPathAligned(center, widthM / 2);
+    const b = offsetClosedPathAligned(center, -widthM / 2);
     const toPx = p => ({ x:p.x*200 + drawCanvas.width/2, y:drawCanvas.height/2 - p.y*200 });
     return { a:a.map(toPx), b:b.map(toPx) };
 }
