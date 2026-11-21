@@ -3719,23 +3719,10 @@ function offsetClosedPath(points, distance) {
         return best;
     };
 
-    // Не уменьшаем смещение автоматически: это меняло фактическое положение
-    // траектории относительно заданных пользователем параметров.
-    let selected = runOffset(requestedDelta);
-    if (!selected) {
-        let low = 0, high = 1, bestFactor = 0;
-        for (let i = 0; i < 18; i++) {
-            const factor = (low + high) / 2;
-            const candidate = runOffset(requestedDelta * factor);
-            if (candidate) {
-                bestFactor = factor;
-                low = factor;
-            } else {
-                high = factor;
-            }
-        }
-        if (bestFactor > 1e-5) selected = runOffset(requestedDelta * bestFactor);
-    }
+    // Знак смещения учитывает направление обхода исходного контура.
+    // Запрошенное расстояние не уменьшается автоматически.
+    const requestedDelta = -distance * Math.sign(area) * scale;
+    const selected = runOffset(requestedDelta);
     if (!selected) {
         throw new Error('Не удалось построить смещённый контур даже при минимальной ширине');
     }
