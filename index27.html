@@ -2599,7 +2599,7 @@ drawCanvas.addEventListener('pointermove', e => {
             // Интерполируем быстрые движения мыши, чтобы между событиями pointermove
             // не оставались непротёртые промежутки.
             const distance = Math.hypot(pos.x - last.x, pos.y - last.y);
-            const steps = Math.max(1, Math.ceil(distance / 1));
+            const steps = Math.max(1, Math.ceil(distance / 2.5));
             for (let i = 1; i <= steps; i++) {
                 const t = i / steps;
                 erasePath.push({
@@ -2640,7 +2640,7 @@ drawCanvas.addEventListener('pointercancel', () => {
     }
 });
 
-drawCanvas.addEventListener('pointerup', () => {
+drawCanvas.addEventListener('pointerup', async () => {
     if (dragPointIndex >= 0) {
         dragPointIndex = -1;
         drawCanvas.style.cursor = 'crosshair';
@@ -2660,6 +2660,9 @@ drawCanvas.addEventListener('pointerup', () => {
 
     if (isDrawing && drawMode === 'eraser') {
         isDrawing = false;
+        setStatus('⏳ Ластик: выполняется геометрическое вычитание…');
+        // Даём браузеру отрисовать статус до синхронной операции Clipper.
+        await new Promise(resolve => requestAnimationFrame(() => resolve()));
         const target = drawContours[eraseTargetContour];
         const path = erasePath.slice();
         erasePath = [];
@@ -2781,7 +2784,7 @@ function subtractStrokeFromContour(contour, strokePath, radius) {
     }));
 
     // Сохраняем мелкие повороты прохода: грубое упрощение давало островки материала.
-    const centerline = simplifyPath(strokePath, 0.2);
+    const centerline = simplifyPath(strokePath, 0.35);
     if (centerline.length < 2) throw new Error('Слишком короткий проход ластика');
 
     // Build a true round-ended cutter from the open pointer path.
