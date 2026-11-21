@@ -579,10 +579,11 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
         </select>
 
         <div id="cut-shape-options" style="display:none;">
-            <label>Шов относительно фигуры:</label>
+            <label>Положение траектории:</label>
             <select id="sel-frame-side">
                 <option value="inside">Внутри фигуры</option>
                 <option value="outside">Снаружи фигуры</option>
+                <option value="contour">По полному контуру (без смещения)</option>
             </select>
 
             <label>Ширина шва: <span class="val" id="val-cut-width">30.0</span> мм</label>
@@ -3633,12 +3634,13 @@ function resampleClosedPath(points, count, referencePath = points) {
         throw new Error('Недостаточно точек для построения смещённого контура');
     }
 
-    const area = contourSignedArea(points);
+    // Пересэмплирование по длине дуги сохраняет порядок обхода и равномерно
+    // распределяет вершины. Удаление "наименее выраженных" точек ломало
+    // соответствие сегментов на звёздах и сложных SVG.
     const referenceArea = contourSignedArea(referencePath);
     let path = points.map(p => ({ x: p.x, y: p.y }));
-    if (Math.sign(area) !== Math.sign(referenceArea)) path.reverse();
+    if (Math.sign(contourSignedArea(path)) !== Math.sign(referenceArea)) path.reverse();
 
-    // Совмещаем начало смещённого контура с ближайшей вершиной исходного.
     const anchor = referencePath[0];
     let first = 0, best = Infinity;
     for (let i = 0; i < path.length; i++) {
@@ -3647,49 +3649,26 @@ function resampleClosedPath(points, count, referencePath = points) {
     }
     path = path.slice(first).concat(path.slice(0, first));
 
-    // Если вершин слишком много, удаляем только наименее выраженные
-    // промежуточные точки. Острые углы сохраняются.
-    while (path.length > count) {
-        let removeAt = -1, minDeviation = Infinity;
-        for (let i = 0; i < path.length; i++) {
-            const a = path[(i - 1 + path.length) % path.length];
-            const p = path[i];
-            const b = path[(i + 1) % path.length];
-            const dx = b.x - a.x, dy = b.y - a.y;
-            const len = Math.hypot(dx, dy) || 1;
-            const deviation = Math.abs(dx * (a.y - p.y) - (a.x - p.x) * dy) / len;
-            if (deviation < minDeviation) { minDeviation = deviation; removeAt = i; }
-        }
-        if (removeAt < 0) break;
-        path.splice(removeAt, 1);
-    }
+    const lengths = path.map((p, i) => {
+        const q = path[(i + 1) % path.length];
+        return Math.hypot(q.x - p.x, q.y - p.y);
+    });
+    const perimeter = lengths.reduce((a, b) => a + b, 0);
+    if (!(perimeter > 1e-10)) throw new Error('Периметр смещённого контура слишком мал');
 
-    // Если точек не хватает, добавляем их на рёбра, не срезая существующие углы.
-    if (path.length < count) {
-        const lengths = path.map((p, i) => {
-            const q = path[(i + 1) % path.length];
-            return Math.hypot(q.x - p.x, q.y - p.y);
-        });
-        const perimeter = lengths.reduce((a, b) => a + b, 0);
-        const extra = count - path.length;
-        const allocations = lengths.map(len => perimeter > 1e-12 ? Math.floor(extra * len / perimeter) : 0);
-        let remaining = extra - allocations.reduce((a, b) => a + b, 0);
-        const order = lengths.map((len, i) => ({ i, remainder: perimeter > 1e-12 ? extra * len / perimeter - allocations[i] : 0 }))
-            .sort((a, b) => b.remainder - a.remainder);
-        for (let i = 0; i < remaining; i++) allocations[order[i % order.length].i]++;
-
-        const expanded = [];
-        for (let i = 0; i < path.length; i++) {
-            const a = path[i], b = path[(i + 1) % path.length];
-            expanded.push({ x: a.x, y: a.y });
-            for (let j = 1; j <= allocations[i]; j++) {
-                const t = j / (allocations[i] + 1);
-                expanded.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
-            }
+    const result = [];
+    let edge = 0, edgeStart = 0;
+    for (let i = 0; i < count; i++) {
+        const target = perimeter * i / count;
+        while (edge < lengths.length - 1 && edgeStart + lengths[edge] < target) {
+            edgeStart += lengths[edge++];
         }
-        path = expanded;
+        const len = lengths[edge];
+        const t = len > 1e-12 ? Math.max(0, Math.min(1, (target - edgeStart) / len)) : 0;
+        const a = path[edge], b = path[(edge + 1) % path.length];
+        result.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
     }
-    return path;
+    return result;
 }
 
 function offsetClosedPath(points, distance) {
@@ -3719,27 +3698,29 @@ function offsetClosedPath(points, distance) {
         offset.Execute(solution, delta);
         if (!solution.length) return null;
 
-        // Сложный SVG может дать несколько островков после смещения.
-        // Для непрерывной траектории выбираем компоненту с наибольшей площадью,
-        // вместо того чтобы отменять всё 3D-превью.
-        let best = null, bestArea = -1;
+        // Несколько островков нельзя соединять в одну замкнутую траекторию:
+        // выбор только крупнейшего островка незаметно терял части SVG.
+        let best = null, bestArea = -1, validCount = 0;
         // Площадь Clipper измеряется в квадрате целочисленного масштаба.
         // Отсекаем вырожденные остатки (например, треугольник площадью 0.5),
         // которые после перевода в метры превращаются в нулевую геометрию.
         const minAreaInClipperUnits = 1e-10 * scale * scale;
         for (const candidate of solution) {
             const candidateArea = Math.abs(clipper.Clipper.Area(candidate));
-            if (candidate.length >= 3 && candidateArea >= minAreaInClipperUnits && candidateArea > bestArea) {
-                best = candidate;
-                bestArea = candidateArea;
+            if (candidate.length >= 3 && candidateArea >= minAreaInClipperUnits) {
+                validCount++;
+                if (candidateArea > bestArea) { best = candidate; bestArea = candidateArea; }
             }
+        }
+        if (validCount > 1) {
+            throw new Error('Смещение разделило контур на ' + validCount +
+                ' отдельных частей. Уменьшите ширину шва или измените положение траектории.');
         }
         return best;
     };
 
-    // В узких местах SVG заданное смещение может схлопнуть контур.
-    // Подбираем максимально возможное смещение, сохраняя валидную траекторию.
-    const requestedDelta = -distance * Math.sign(area) * scale;
+    // Не уменьшаем смещение автоматически: это меняло фактическое положение
+    // траектории относительно заданных пользователем параметров.
     let selected = runOffset(requestedDelta);
     if (!selected) {
         let low = 0, high = 1, bestFactor = 0;
@@ -3783,6 +3764,9 @@ function frameCenterlineMeters(pointsPx, widthM, gapM, side) {
     const path = cleanClosedPath(pointsPx.map(toMeters));
     const area = contourSignedArea(path);
     if (Math.abs(area) < 1e-8) throw new Error('Площадь контура слишком мала');
+    // Режим "по контуру" использует исходную линию без XY-смещения.
+    // Глубина остаётся независимым параметром inp-cd.
+    if (side === 'contour') return path;
     const inward = Math.sign(area);
     const shift = side === 'outside' ? -(gapM + widthM / 2) : widthM / 2;
     return offsetClosedPath(path, inward * shift);
