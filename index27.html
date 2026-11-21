@@ -2386,7 +2386,10 @@ function redrawDrawCanvas() {
             }
         }
 
-        if (isActive || drawMode === 'eraser') {
+        // Show edit handles only in polygon-edit mode. Imported SVGs can contain
+        // thousands of sampled vertices; rendering every handle in eraser mode
+        // creates a solid dark mass and makes the shape impossible to inspect.
+        if (isActive && drawMode === 'poly' && contour.length <= 180) {
             for (let i = 0; i < contour.length; i++) {
                 const p = contour[i];
                 drawCtx.beginPath();
@@ -2396,9 +2399,11 @@ function redrawDrawCanvas() {
                 drawCtx.strokeStyle = '#111';
                 drawCtx.lineWidth = 1;
                 drawCtx.stroke();
-                drawCtx.font = '11px Arial';
-                drawCtx.fillStyle = '#ffffff';
-                drawCtx.fillText(String(i + 1), p.x + 8, p.y - 8);
+                if (contour.length <= 80) {
+                    drawCtx.font = '11px Arial';
+                    drawCtx.fillStyle = '#ffffff';
+                    drawCtx.fillText(String(i + 1), p.x + 8, p.y - 8);
+                }
             }
         }
     });
@@ -2434,11 +2439,21 @@ function redrawDrawCanvas() {
             drawCtx.beginPath();
             drawCtx.moveTo(path[0].x, path[0].y);
             for (let i = 1; i < path.length; i++) drawCtx.lineTo(path[i].x, path[i].y);
-            drawCtx.strokeStyle = drawMode === 'eraser' ? 'rgba(255,70,70,0.85)' : '#ffcc00';
-            drawCtx.lineWidth = readSlider('inp-brush', 6);
+            drawCtx.strokeStyle = drawMode === 'eraser' ? 'rgba(255,70,70,0.9)' : '#ffcc00';
+            drawCtx.lineWidth = drawMode === 'eraser'
+                ? Math.max(2, readSlider('inp-brush', 6))
+                : readSlider('inp-brush', 6);
             drawCtx.lineCap = 'round';
             drawCtx.lineJoin = 'round';
             drawCtx.stroke();
+            if (drawMode === 'eraser') {
+                const tip = path[path.length - 1];
+                drawCtx.beginPath();
+                drawCtx.arc(tip.x, tip.y, Math.max(1, readSlider('inp-brush', 6) / 2), 0, Math.PI * 2);
+                drawCtx.strokeStyle = '#ff3333';
+                drawCtx.lineWidth = 1.5;
+                drawCtx.stroke();
+            }
         }
     }
 
