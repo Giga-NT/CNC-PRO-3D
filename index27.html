@@ -2928,7 +2928,7 @@ function buildParametricAreaContour(shape, cx, cy) {
     const legLength = readSlider('inp-area-leg-length', 70);
     const pts = [];
     if (shape === 'arc') {
-        const start = -Math.PI * 0.88, end = -Math.PI * 0.12, steps = 64;
+        const start = -Math.PI * 0.88, end = -Math.PI * 0.12, steps = 256;
         for (let i = 0; i <= steps; i++) {
             const a = start + (end - start) * i / steps;
             pts.push({ x: cx + (radius + half) * Math.cos(a), y: cy + (radius + half) * Math.sin(a) });
@@ -2939,7 +2939,7 @@ function buildParametricAreaContour(shape, cx, cy) {
         }
     } else if (shape === 'arch') {
         const outer = radius + half, inner = Math.max(2, radius - half);
-        const bottom = cy + outer + legLength, steps = 72;
+        const bottom = cy + outer + legLength, steps = 288;
         for (let i = 0; i <= steps; i++) {
             const a = Math.PI + Math.PI * i / steps;
             pts.push({ x: cx + outer * Math.cos(a), y: cy + outer * Math.sin(a) });
@@ -2990,7 +2990,7 @@ function updateParametricArea() {
 function buildOrnamentContour(shape, cx, cy) {
     const pts = [];
     const add = (x, y) => pts.push({ x: cx + x, y: cy + y });
-    const bezier = (p0,p1,p2,p3,n=12,skip=false) => {
+    const bezier = (p0,p1,p2,p3,n=48,skip=false) => {
         for(let i=skip?1:0;i<=n;i++){
             const t=i/n,u=1-t;
             add(u*u*u*p0[0]+3*u*u*t*p1[0]+3*u*t*t*p2[0]+t*t*t*p3[0],
@@ -3017,7 +3017,7 @@ function buildOrnamentContour(shape, cx, cy) {
           [[68,-5],[78,-20],[66,-40],[42,-50]],
           [[42,-50],[25,-58],[10,-68],[0,-82]]
         ];
-        segs.forEach((seg,i)=>bezier(...seg,10,i>0));
+        segs.forEach((seg,i)=>bezier(...seg,48,i>0));
     } else if (shape === 'ornament-fleur') {
         // Плавная трёхлопастная геральдическая лилия, без грубых углов.
         const segs=[
@@ -3034,7 +3034,7 @@ function buildOrnamentContour(shape, cx, cy) {
           [[53,-42],[48,-57],[29,-54],[16,-37]],
           [[16,-37],[18,-54],[8,-68],[0,-82]]
         ];
-        segs.forEach((seg,i)=>bezier(...seg,12,i>0));
+        segs.forEach((seg,i)=>bezier(...seg,48,i>0));
     } else if (shape === 'ornament-palmette') {
         // Пальметта с центральным листом и двумя боковыми акантовыми долями.
         const segs=[
@@ -3051,7 +3051,7 @@ function buildOrnamentContour(shape, cx, cy) {
           [[43,-43],[31,-58],[13,-48],[0,-32]],
           [[0,-32],[8,-43],[8,-58],[0,-72]]
         ];
-        segs.forEach((seg,i)=>bezier(...seg,12,i>0));
+        segs.forEach((seg,i)=>bezier(...seg,48,i>0));
     }
     return pts;
 }
@@ -3064,7 +3064,7 @@ function insertShape(shape) {
 
     switch (shape) {
         case 'circle':
-            for (let i = 0; i < 32; i++) { const t = (i / 32) * Math.PI * 2; newContour.push({ x: cx + r * Math.cos(t), y: cy + r * Math.sin(t) }); }
+            for (let i = 0; i < 256; i++) { const t = (i / 256) * Math.PI * 2; newContour.push({ x: cx + r * Math.cos(t), y: cy + r * Math.sin(t) }); }
             break;
         case 'square':
             newContour.push({ x: cx-r, y: cy-r }, { x: cx+r, y: cy-r }, { x: cx+r, y: cy+r }, { x: cx-r, y: cy+r });
@@ -3076,7 +3076,7 @@ function insertShape(shape) {
             for (let i = 0; i < 10; i++) { const t = (i / 10) * Math.PI * 2 - Math.PI / 2; const rad = i % 2 === 0 ? r : r * 0.4; newContour.push({ x: cx + rad * Math.cos(t), y: cy + rad * Math.sin(t) }); }
             break;
         case 'heart':
-            for (let i = 0; i <= 30; i++) { const t = (i / 30) * Math.PI * 2; const x = 16 * Math.pow(Math.sin(t), 3); const y = -(13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t)); newContour.push({ x: cx + x * 2.5, y: cy + y * 2.5 }); }
+            for (let i = 0; i < 240; i++) { const t = (i / 240) * Math.PI * 2; const x = 16 * Math.pow(Math.sin(t), 3); const y = -(13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t)); newContour.push({ x: cx + x * 2.5, y: cy + y * 2.5 }); }
             break;
         case 'cross': {
             const cw = r * 0.3, ch = r * 0.8;
