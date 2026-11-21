@@ -3709,23 +3709,50 @@ function offsetClosedPath(points, distance) {
     if (Math.abs(area) < 1e-10) throw new Error('Площадь контура слишком мала для смещения');
 
     const offset = new clipper.ClipperOffset(2.0, 0.25);
-    offset.AddPath(path, clipper.JoinType.jtMiter, clipper.EndType.etClosedPolygon);
-    const solution = new clipper.Paths();
-    // В Clipper положительный delta расширяет полигон; знак преобразуем
-    // так, чтобы положительное distance совпадало с левым нормальным смещением.
-    offset.Execute(solution, -distance * Math.sign(area) * scale);
+    offset.AddPath(path, clipper.JoinType.jtRound, clipper.EndType.etClosedPolygon);
 
-    if (!solution.length) {
-        throw new Error('Ширина шва слишком велика: контур схлопнулся при смещении');
+    const runOffset = delta => {
+        const solution = new clipper.Paths();
+        offset.Execute(solution, delta);
+        if (!solution.length) return null;
+
+        // Сложный SVG может дать несколько островков после смещения.
+        // Для непрерывной траектории выбираем компоненту с наибольшей площадью,
+        // вместо того чтобы отменять всё 3D-превью.
+        let best = null, bestArea = -1;
+        for (const candidate of solution) {
+            const candidateArea = Math.abs(clipper.Clipper.Area(candidate));
+            if (candidate.length >= 3 && candidateArea > bestArea) {
+                best = candidate;
+                bestArea = candidateArea;
+            }
+        }
+        return best;
+    };
+
+    // В узких местах SVG заданное смещение может схлопнуть контур.
+    // Подбираем максимально возможное смещение, сохраняя валидную траекторию.
+    const requestedDelta = -distance * Math.sign(area) * scale;
+    let selected = runOffset(requestedDelta);
+    if (!selected) {
+        let low = 0, high = 1, bestFactor = 0;
+        for (let i = 0; i < 18; i++) {
+            const factor = (low + high) / 2;
+            const candidate = runOffset(requestedDelta * factor);
+            if (candidate) {
+                bestFactor = factor;
+                low = factor;
+            } else {
+                high = factor;
+            }
+        }
+        if (bestFactor > 1e-5) selected = runOffset(requestedDelta * bestFactor);
+    }
+    if (!selected) {
+        throw new Error('Не удалось построить смещённый контур даже при минимальной ширине');
     }
 
-    // Если смещение разделило контур на несколько независимых частей,
-    // не подменяем его исходной линией: явно сообщаем о невозможной ширине.
-    if (solution.length > 1) {
-        throw new Error('При такой ширине шва контур разделяется на несколько частей. Уменьшите ширину.');
-    }
-
-    const output = solution[0].map(p => ({ x: p.X / scale, y: p.Y / scale }));
+    const output = selected.map(p => ({ x: p.X / scale, y: p.Y / scale }));
     if (output.length < 3 || output.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y)) ||
         Math.abs(contourSignedArea(output)) < 1e-10) {
         throw new Error('Не удалось построить корректный смещённый контур');
