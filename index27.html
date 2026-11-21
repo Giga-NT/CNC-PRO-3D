@@ -3698,13 +3698,25 @@ function resampleClosedPath(points, count, referencePath = points) {
     let path = points.map(p => ({ x: p.x, y: p.y }));
     if (Math.sign(contourSignedArea(path)) !== Math.sign(referenceArea)) path.reverse();
 
+    // Фиксируем фазу контура проекцией исходной стартовой точки
+    // на ближайший сегмент смещённого пути. Привязка к ближайшей ВЕРШИНЕ
+    // вызывала скачки шва при малых изменениях формы/ширины.
     const anchor = referencePath[0];
-    let first = 0, best = Infinity;
+    let first = 0, best = Infinity, bestT = 0, bestPoint = null;
     for (let i = 0; i < path.length; i++) {
-        const d = Math.hypot(path[i].x - anchor.x, path[i].y - anchor.y);
-        if (d < best) { best = d; first = i; }
+        const a = path[i], b = path[(i + 1) % path.length];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const len2 = dx * dx + dy * dy;
+        const t = len2 > 1e-20
+            ? Math.max(0, Math.min(1, ((anchor.x - a.x) * dx + (anchor.y - a.y) * dy) / len2))
+            : 0;
+        const q = { x: a.x + dx * t, y: a.y + dy * t };
+        const d2 = (q.x - anchor.x) ** 2 + (q.y - anchor.y) ** 2;
+        if (d2 < best) { best = d2; first = i; bestT = t; bestPoint = q; }
     }
-    path = path.slice(first).concat(path.slice(0, first));
+    const ordered = [bestPoint];
+    for (let k = 1; k <= path.length; k++) ordered.push(path[(first + k) % path.length]);
+    path = ordered;
 
     const lengths = path.map((p, i) => {
         const q = path[(i + 1) % path.length];
@@ -4201,6 +4213,8 @@ function showContourIn3D() {
         updateCutZHint();
     } catch (e) {
         log(`Ошибка превью: ${e.message}`);
+        setStatus(`⚠️ Превью не построено: ${e.message}`);
+        showDrawWarn(`3D-превью: ${e.message}`);
         console.error(e);
     }
 }
@@ -4437,6 +4451,7 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
     if (!csgAvailable || !stellaMesh) return false;
     const op = operation || SUBTRACTION;
 
+    setStatus('⏳ Подготовка вырезания…');
     showLoading(true, 'Подготовка к вычитанию…');
     // Даём браузеру отрисовать экран загрузки до тяжёлого синхронного CSG.
     await new Promise(resolve => requestAnimationFrame(() => resolve()));
@@ -4444,10 +4459,12 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
 
     let brush = null;
     try {
+        setStatus('⏳ Построение BVH и подготовка модели…');
         showLoading(true, 'Построение BVH и подготовка модели…');
         brush = createStellaBrush();
         let success = 0;
 
+        setStatus(`⏳ Вычитание из заготовки: ${cutters.length} операция(й)…`);
         showLoading(true, 'Вычитание контура из заготовки…');
         cutters.forEach((c, idx) => {
             let nextBrush = null;
