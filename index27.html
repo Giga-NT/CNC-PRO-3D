@@ -3720,9 +3720,13 @@ function offsetClosedPath(points, distance) {
         // Для непрерывной траектории выбираем компоненту с наибольшей площадью,
         // вместо того чтобы отменять всё 3D-превью.
         let best = null, bestArea = -1;
+        // Площадь Clipper измеряется в квадрате целочисленного масштаба.
+        // Отсекаем вырожденные остатки (например, треугольник площадью 0.5),
+        // которые после перевода в метры превращаются в нулевую геометрию.
+        const minAreaInClipperUnits = 1e-10 * scale * scale;
         for (const candidate of solution) {
             const candidateArea = Math.abs(clipper.Clipper.Area(candidate));
-            if (candidate.length >= 3 && candidateArea > bestArea) {
+            if (candidate.length >= 3 && candidateArea >= minAreaInClipperUnits && candidateArea > bestArea) {
                 best = candidate;
                 bestArea = candidateArea;
             }
