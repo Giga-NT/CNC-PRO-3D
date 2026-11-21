@@ -2684,7 +2684,12 @@ drawCanvas.addEventListener('pointerup', () => {
 
 drawCanvas.addEventListener('pointerleave', () => {
     if (isDrawing && drawMode === 'brush') { isDrawing = false; brushPath = []; redrawDrawCanvas(); }
-    if (isDrawing && drawMode === 'eraser') { isDrawing = false; erasePath = []; eraseTargetContour = -1; redrawDrawCanvas(); }
+    if (isDrawing && drawMode === 'eraser') {
+        isDrawing = false; erasePath = []; eraseTargetContour = -1;
+        // A pointer leaving the canvas cancels the unfinished erase transaction.
+        if (drawUndoStack.length) drawUndoStack.pop();
+        redrawDrawCanvas();
+    }
     if (dragPointIndex >= 0) { dragPointIndex = -1; drawCanvas.style.cursor = 'crosshair'; redrawDrawCanvas(); }
     if (isDraggingContour) { isDraggingContour = false; dragContourStart = null; drawCanvas.style.cursor = 'crosshair'; redrawDrawCanvas(); }
     if (hoverPointIndex !== -1 || hoverContourIndex !== -1) {
