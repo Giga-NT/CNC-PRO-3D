@@ -3813,7 +3813,7 @@ function frameCenterlineMeters(pointsPx, widthM, gapM, side) {
     if (side === 'contour') return path;
     const inward = Math.sign(area);
     const shift = side === 'outside' ? -(gapM + widthM / 2) : widthM / 2;
-    return offsetClosedPathAligned(path, inward * shift);
+    return offsetClosedPath(path, inward * shift);
 }
 
 function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
@@ -3840,8 +3840,8 @@ function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
             halfWidth = widthM / 2 + extra * shapeFactor;
         } else if (profile === 'v') halfWidth = Math.max(0.00035, (widthM / 2) * (1 - t));
         else if (profile === 'u') halfWidth = Math.max(0.001, (widthM / 2) * Math.sqrt(Math.max(0, 1 - t * t)));
-        const leftLevel = offsetClosedPathAligned(center, halfWidth);
-        const rightLevel = offsetClosedPathAligned(center, -halfWidth);
+        const leftLevel = offsetClosedPath(center, halfWidth);
+        const rightLevel = offsetClosedPath(center, -halfWidth);
         if (leftLevel.length !== center.length || rightLevel.length !== center.length) {
             throw new Error('Несовпадение числа вершин в уровнях шва: центр=' + center.length +
                 ', левая сторона=' + leftLevel.length + ', правая сторона=' + rightLevel.length);
@@ -3924,8 +3924,8 @@ function framePreviewRails(pointsPx) {
     const gapM = getFrameGapMeters();
     const side = document.getElementById('sel-frame-side')?.value || 'inside';
     const center = frameCenterlineMeters(pointsPx, widthM, gapM, side);
-    const a = offsetClosedPathAligned(center, widthM / 2);
-    const b = offsetClosedPathAligned(center, -widthM / 2);
+    const a = offsetClosedPath(center, widthM / 2);
+    const b = offsetClosedPath(center, -widthM / 2);
     const toPx = p => ({ x:p.x*200 + drawCanvas.width/2, y:drawCanvas.height/2 - p.y*200 });
     return { a:a.map(toPx), b:b.map(toPx) };
 }
