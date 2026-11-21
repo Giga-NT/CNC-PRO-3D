@@ -2615,6 +2615,16 @@ drawCanvas.addEventListener('pointermove', e => {
     }
 });
 
+drawCanvas.addEventListener('pointercancel', () => {
+    if (isDrawing && drawMode === 'eraser') {
+        isDrawing = false;
+        erasePath = [];
+        eraseTargetContour = -1;
+        if (drawUndoStack.length) drawUndoStack.pop();
+        redrawDrawCanvas();
+    }
+});
+
 drawCanvas.addEventListener('pointerup', () => {
     if (dragPointIndex >= 0) {
         dragPointIndex = -1;
@@ -2646,8 +2656,25 @@ drawCanvas.addEventListener('pointerup', () => {
             return;
         }
         const hole = buildStrokeOutline(path, Math.max(2, readSlider('inp-brush', 6)) / 2);
-        const inside = hole.every(p => pointInPolygon(p, target));
-        if (!inside || hole.some(p => drawContours.some((c, ci) => ci !== targetIndex && c.length >= 3 && !contourHoles.has(ci) && pointInPolygon(p, c)))) {
+        // Check the complete eraser boundary, not just its vertices. A long
+        // segment can leave the source contour even when both endpoints are inside.
+        const polygonIsInside = (inner, outer) => {
+            for (let i = 0; i < inner.length; i++) {
+                const a = inner[i], b = inner[(i + 1) % inner.length];
+                const steps = Math.max(1, Math.ceil(Math.hypot(b.x-a.x, b.y-a.y) / 3));
+                for (let k = 0; k <= steps; k++) {
+                    const t = k / steps;
+                    if (!pointInPolygon({ x:a.x+(b.x-a.x)*t, y:a.y+(b.y-a.y)*t }, outer)) return false;
+                }
+            }
+            return true;
+        };
+        const inside = polygonIsInside(hole, target);
+        const overlapsOtherSolid = drawContours.some((c, ci) =>
+            ci !== targetIndex && c.length >= 3 && !contourHoles.has(ci) &&
+            (hole.some(p => pointInPolygon(p, c)) || c.some(p => pointInPolygon(p, hole)))
+        );
+        if (!inside || overlapsOtherSolid) {
             drawUndoStack.pop();
             redrawDrawCanvas();
             setStatus('Ластик пока вырезает только участок целиком внутри контура. Для вырезания от края нужен отдельный режим.');
@@ -2699,12 +2726,8 @@ drawCanvas.addEventListener('pointerup', () => {
 
 drawCanvas.addEventListener('pointerleave', () => {
     if (isDrawing && drawMode === 'brush') { isDrawing = false; brushPath = []; redrawDrawCanvas(); }
-    if (isDrawing && drawMode === 'eraser') {
-        isDrawing = false; erasePath = []; eraseTargetContour = -1;
-        // A pointer leaving the canvas cancels the unfinished erase transaction.
-        if (drawUndoStack.length) drawUndoStack.pop();
-        redrawDrawCanvas();
-    }
+    // Pointer capture keeps the stroke alive outside the canvas; do not cancel
+    // an eraser gesture on pointerleave. It is finalized by pointerup instead.
     if (dragPointIndex >= 0) { dragPointIndex = -1; drawCanvas.style.cursor = 'crosshair'; redrawDrawCanvas(); }
     if (isDraggingContour) { isDraggingContour = false; dragContourStart = null; drawCanvas.style.cursor = 'crosshair'; redrawDrawCanvas(); }
     if (hoverPointIndex !== -1 || hoverContourIndex !== -1) {
