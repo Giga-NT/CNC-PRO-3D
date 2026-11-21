@@ -3695,8 +3695,11 @@ function resampleClosedPath(points, count, referencePath = points) {
 function offsetClosedPath(points, distance) {
     // ClipperOffset корректно обрабатывает вогнутые углы и очищает
     // самопересечения, возникающие при смещении сложных замкнутых контуров.
-    const source = cleanClosedPath(points);
-    if (Math.abs(distance) < 1e-10) return source.map(p => ({ x: p.x, y: p.y }));
+    // Не схлопываем повторно интерполированные точки: все уровни канавки
+    // обязаны сохранить исходное число вершин, иначе индексы стенок разойдутся.
+    const targetCount = Array.isArray(points) ? points.length : 0;
+    const source = cleanClosedPath(points, 1e-8);
+    if (Math.abs(distance) < 1e-10) return resampleClosedPath(source, targetCount, source);
 
     const clipper = window.ClipperLib;
     if (!clipper || !clipper.ClipperOffset) {
@@ -3769,7 +3772,11 @@ function offsetClosedPath(points, distance) {
     }
 
     // Все уровни 3D-канавки должны иметь одинаковое число точек.
-    return resampleClosedPath(output, source.length, source);
+    const aligned = resampleClosedPath(output, targetCount, source);
+    if (aligned.length !== targetCount) {
+        throw new Error('Смещение изменило число вершин траектории: ожидалось ' + targetCount + ', получено ' + aligned.length);
+    }
+    return aligned;
 }
 
 function frameCenterlineMeters(pointsPx, widthM, gapM, side) {
@@ -3805,8 +3812,14 @@ function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
             halfWidth = widthM / 2 + extra * shapeFactor;
         } else if (profile === 'v') halfWidth = Math.max(0.00035, (widthM / 2) * (1 - t));
         else if (profile === 'u') halfWidth = Math.max(0.001, (widthM / 2) * Math.sqrt(Math.max(0, 1 - t * t)));
-        left.push(offsetClosedPath(center, halfWidth));
-        right.push(offsetClosedPath(center, -halfWidth));
+        const leftLevel = offsetClosedPath(center, halfWidth);
+        const rightLevel = offsetClosedPath(center, -halfWidth);
+        if (leftLevel.length !== center.length || rightLevel.length !== center.length) {
+            throw new Error('Несовпадение числа вершин в уровнях шва: центр=' + center.length +
+                ', левая сторона=' + leftLevel.length + ', правая сторона=' + rightLevel.length);
+        }
+        left.push(leftLevel);
+        right.push(rightLevel);
     }
 
     const positions = [];
