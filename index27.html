@@ -3753,9 +3753,15 @@ function offsetClosedPath(points, distance) {
     }
 
     const output = selected.map(p => ({ x: p.X / scale, y: p.Y / scale }));
-    if (output.length < 3 || output.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y)) ||
-        Math.abs(contourSignedArea(output)) < 1e-10) {
-        throw new Error('Не удалось построить корректный смещённый контур');
+    const outputArea = contourSignedArea(output);
+    const hasInvalidPoint = output.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y));
+    if (output.length < 3 || hasInvalidPoint || Math.abs(outputArea) < 1e-10) {
+        throw new Error(
+            'Некорректный результат смещения: точек=' + output.length +
+            ', площадь=' + outputArea.toExponential(3) +
+            ', ClipperArea=' + clipper.Clipper.Area(selected).toExponential(3) +
+            ', некорректные координаты=' + hasInvalidPoint
+        );
     }
 
     // Все уровни 3D-канавки должны иметь одинаковое число точек.
