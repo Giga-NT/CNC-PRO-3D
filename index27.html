@@ -1529,6 +1529,7 @@ function buildLoftGeometry(frontPoints, backPoints, depth) {
         indices.push(b, c, d);
     }
 
+    if (!positions.length || positions.length % 9 !== 0) throw new Error('Не удалось собрать треугольники канавки');
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
     geo.setIndex(indices);
@@ -3702,6 +3703,7 @@ function resampleClosedPath(points, count, referencePath = points) {
     // на ближайший сегмент смещённого пути. Привязка к ближайшей ВЕРШИНЕ
     // вызывала скачки шва при малых изменениях формы/ширины.
     const anchor = referencePath[0];
+    if (!anchor || !Number.isFinite(anchor.x) || !Number.isFinite(anchor.y)) throw new Error('Исходная точка привязки контура некорректна');
     let first = 0, best = Infinity, bestT = 0, bestPoint = null;
     for (let i = 0; i < path.length; i++) {
         const a = path[i], b = path[(i + 1) % path.length];
@@ -3714,6 +3716,7 @@ function resampleClosedPath(points, count, referencePath = points) {
         const d2 = (q.x - anchor.x) ** 2 + (q.y - anchor.y) ** 2;
         if (d2 < best) { best = d2; first = i; bestT = t; bestPoint = q; }
     }
+    if (!bestPoint || !Number.isFinite(bestPoint.x) || !Number.isFinite(bestPoint.y)) throw new Error('Не удалось определить стабильную точку начала смещённого контура');
     const ordered = [bestPoint];
     for (let k = 1; k <= path.length; k++) ordered.push(path[(first + k) % path.length]);
     path = ordered;
@@ -3737,6 +3740,7 @@ function resampleClosedPath(points, count, referencePath = points) {
         const a = path[edge], b = path[(edge + 1) % path.length];
         result.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
     }
+    if (result.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) throw new Error('Пересэмплирование создало некорректные координаты');
     return result;
 }
 
@@ -3746,8 +3750,9 @@ function offsetClosedPath(points, distance) {
     // Не схлопываем повторно интерполированные точки: все уровни канавки
     // обязаны сохранить исходное число вершин, иначе индексы стенок разойдутся.
     const targetCount = Array.isArray(points) ? points.length : 0;
-    const source = cleanClosedPath(points, 1e-8);
-    if (Math.abs(distance) < 1e-10) return resampleClosedPath(source, targetCount, source);
+    const source = cleanClosedPath(points, 1e-12);
+    if (source.length < 3) throw new Error('Для смещения нужно минимум 3 различные точки');
+    if (Math.abs(distance) < 1e-10) return source.map(p => ({ x:p.x, y:p.y }));
 
     const clipper = window.ClipperLib;
     if (!clipper || !clipper.ClipperOffset) {
@@ -3819,19 +3824,22 @@ function offsetClosedPath(points, distance) {
     if (source.length === targetCount && selected.length === source.length) {
         try {
             const reference = offsetClosedPathAligned(source, distance);
-            let bestShift = 0, bestScore = Infinity;
-            for (let shift = 0; shift < selected.length; shift++) {
-                let score = 0;
-                for (let i = 0; i < reference.length; i++) {
-                    const p = selected[(i + shift) % selected.length];
-                    const q = reference[i];
-                    const dx = p.x / scale - q.x, dy = p.y / scale - q.y;
-                    score += dx * dx + dy * dy;
+            let bestShift = 0, bestReverse = false, bestScore = Infinity;
+            for (const reverse of [false, true]) {
+                for (let shift = 0; shift < selected.length; shift++) {
+                    let score = 0;
+                    for (let i = 0; i < reference.length; i++) {
+                        const index = reverse ? (shift - i + selected.length * 2) % selected.length : (i + shift) % selected.length;
+                        const p = selected[index], q = reference[i];
+                        const dx = p.x / scale - q.x, dy = p.y / scale - q.y;
+                        score += dx * dx + dy * dy;
+                    }
+                    if (score < bestScore) { bestScore = score; bestShift = shift; bestReverse = reverse; }
                 }
-                if (score < bestScore) { bestScore = score; bestShift = shift; }
             }
             return Array.from({ length: targetCount }, (_, i) => {
-                const p = selected[(i + bestShift) % selected.length];
+                const index = bestReverse ? (bestShift - i + selected.length * 2) % selected.length : (i + bestShift) % selected.length;
+                const p = selected[index];
                 return { x: p.x / scale, y: p.y / scale };
             });
         } catch (alignmentError) {
@@ -3869,6 +3877,9 @@ function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
     if (!(widthM > 0) || !(depth > 0)) throw new Error('Ширина и глубина шва должны быть больше нуля');
 
     const center = frameCenterlineMeters(pointsPx, widthM, gapM, side);
+    if (!Array.isArray(center) || center.length < 3 || center.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
+        throw new Error('Центральная траектория шва вырождена: требуется минимум 3 корректные точки');
+    }
     const levels = 12;
     const left = [], right = [];
     for (let k = 0; k <= levels; k++) {
@@ -3887,6 +3898,9 @@ function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
         else if (profile === 'u') halfWidth = Math.max(0.001, (widthM / 2) * Math.sqrt(Math.max(0, 1 - t * t)));
         const leftLevel = offsetClosedPath(center, halfWidth);
         const rightLevel = offsetClosedPath(center, -halfWidth);
+        if (leftLevel.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y)) || rightLevel.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
+            throw new Error('Смещение стенок шва создало NaN/Infinity на уровне ' + k + '. Проверьте масштаб и ширину шва.');
+        }
         if (leftLevel.length !== center.length || rightLevel.length !== center.length) {
             throw new Error('Несовпадение числа вершин в уровнях шва: центр=' + center.length +
                 ', левая сторона=' + leftLevel.length + ', правая сторона=' + rightLevel.length);
