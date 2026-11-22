@@ -3831,7 +3831,7 @@ function offsetClosedPath(points, distance) {
                     for (let i = 0; i < reference.length; i++) {
                         const index = reverse ? (shift - i + selected.length * 2) % selected.length : (i + shift) % selected.length;
                         const p = selected[index], q = reference[i];
-                        const dx = p.x / scale - q.x, dy = p.y / scale - q.y;
+                        const dx = p.X / scale - q.x, dy = p.Y / scale - q.y;
                         score += dx * dx + dy * dy;
                     }
                     if (score < bestScore) { bestScore = score; bestShift = shift; bestReverse = reverse; }
@@ -3840,7 +3840,7 @@ function offsetClosedPath(points, distance) {
             return Array.from({ length: targetCount }, (_, i) => {
                 const index = bestReverse ? (bestShift - i + selected.length * 2) % selected.length : (i + bestShift) % selected.length;
                 const p = selected[index];
-                return { x: p.x / scale, y: p.y / scale };
+                return { x: p.X / scale, y: p.Y / scale };
             });
         } catch (alignmentError) {
             // Если исходная геометрия вырожденная для miter-сопоставления,
