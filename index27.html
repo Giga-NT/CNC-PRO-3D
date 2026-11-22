@@ -3858,7 +3858,7 @@ function offsetClosedPath(points, distance) {
 }
 
 function frameCenterlineMeters(pointsPx, widthM, gapM, side) {
-    const path = cleanClosedPath(pointsPx.map(toMeters));
+    const path = cleanClosedPath(pointsPx.map(toMeters), 1e-8); // Не удаляем плотные сегменты кривых и SVG
     const area = contourSignedArea(path);
     if (Math.abs(area) < 1e-8) throw new Error('Площадь контура слишком мала');
     // Режим "по контуру" использует исходную линию без XY-смещения.
