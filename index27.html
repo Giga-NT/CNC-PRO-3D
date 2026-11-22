@@ -3759,8 +3759,13 @@ function offsetClosedPath(points, distance) {
     const area = contourSignedArea(source);
     if (Math.abs(area) < 1e-10) throw new Error('Площадь контура слишком мала для смещения');
 
+    // Для полигональных контуров используем miter-соединения:
+    // они сохраняют острые вершины звёзд и прямые рёбра вместо скругления.
+    // На плотно дискретизированных кривых малый угол между сегментами
+    // даёт практически гладкое смещение.
     const offset = new clipper.ClipperOffset(2.0, 0.25);
-    offset.AddPath(path, clipper.JoinType.jtRound, clipper.EndType.etClosedPolygon);
+    offset.MiterLimit = 50;
+    offset.AddPath(path, clipper.JoinType.jtMiter, clipper.EndType.etClosedPolygon);
 
     const runOffset = delta => {
         const solution = new clipper.Paths();
@@ -3808,7 +3813,35 @@ function offsetClosedPath(points, distance) {
         );
     }
 
-    // Все уровни 3D-канавки должны иметь одинаковое число точек.
+    // Если Clipper сохранил количество вершин, сохраняем каждую вершину
+    // исходного многоугольника. Это критично для звёзд и других ломаных:
+    // равномерное пересэмплирование срезало бы вершины и превращало рёбра в дуги.
+    if (source.length === targetCount && selected.length === source.length) {
+        try {
+            const reference = offsetClosedPathAligned(source, distance);
+            let bestShift = 0, bestScore = Infinity;
+            for (let shift = 0; shift < selected.length; shift++) {
+                let score = 0;
+                for (let i = 0; i < reference.length; i++) {
+                    const p = selected[(i + shift) % selected.length];
+                    const q = reference[i];
+                    const dx = p.x / scale - q.x, dy = p.y / scale - q.y;
+                    score += dx * dx + dy * dy;
+                }
+                if (score < bestScore) { bestScore = score; bestShift = shift; }
+            }
+            return Array.from({ length: targetCount }, (_, i) => {
+                const p = selected[(i + bestShift) % selected.length];
+                return { x: p.x / scale, y: p.y / scale };
+            });
+        } catch (alignmentError) {
+            // Если исходная геометрия вырожденная для miter-сопоставления,
+            // оставляем резервное смещение Clipper с пересэмплированием.
+        }
+    }
+
+    // Для контуров, где Clipper изменил топологию/число вершин (например,
+    // сложные SVG), оставляем безопасный путь с пересэмплированием.
     const aligned = resampleClosedPath(output, targetCount, source);
     if (aligned.length !== targetCount) {
         throw new Error('Смещение изменило число вершин траектории: ожидалось ' + targetCount + ', получено ' + aligned.length);
