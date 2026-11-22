@@ -3866,7 +3866,7 @@ function frameCenterlineMeters(pointsPx, widthM, gapM, side) {
     if (side === 'contour') return path;
     const inward = Math.sign(area);
     const shift = side === 'outside' ? -(gapM + widthM / 2) : widthM / 2;
-    return offsetClosedPath(path, inward * shift);
+    return offsetClosedPathAligned(path, inward * shift); // Центральная линия сохраняет каждую исходную вершину и фазу контура
 }
 
 function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
