@@ -5711,10 +5711,27 @@ renderer.domElement.addEventListener('pointerdown', e => {
    ============================================================ */
 
 document.addEventListener('keydown', e => {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
+    // Ctrl+Z / Ctrl+Y обрабатываем до проверки фокуса:
+    // после выбора SVG браузер оставляет фокус на скрытом file-input,
+    // из-за чего прежняя проверка INPUT блокировала историю рисования.
+    if (e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        undoDraw();
+        redrawDrawCanvas();
+        updateContourInfo();
+        schedulePreview();
+        return;
+    }
+    if (e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'y') {
+        e.preventDefault();
+        redoDraw();
+        redrawDrawCanvas();
+        updateContourInfo();
+        schedulePreview();
+        return;
+    }
 
-    if (e.ctrlKey && e.key.toLowerCase() === 'z') { e.preventDefault(); undoDraw(); return; }
-    if (e.ctrlKey && e.key.toLowerCase() === 'y') { e.preventDefault(); redoDraw(); return; }
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
 
     switch (e.key.toLowerCase()) {
         case 'p': document.getElementById('btn-mode-poly').click(); break;
