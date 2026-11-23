@@ -3569,20 +3569,38 @@ function getFrameGapMeters() {
     return readSlider('inp-frame-gap', 5) / 1000;
 }
 
+function getSelectedAssemblyZBounds() {
+    if (!selectedAssemblyTarget) return null;
+    selectedAssemblyTarget.updateWorldMatrix(true, true);
+    const bounds = new THREE.Box3().setFromObject(selectedAssemblyTarget);
+    if (bounds.isEmpty()) return null;
+    return { min: bounds.min.z, max: bounds.max.z };
+}
+
 function computeNormalCutZCenter() {
     const cd = getCutDepthMeters();
     const czo = readSlider('inp-czo', 0);
+    const bounds = getSelectedAssemblyZBounds();
+    if (bounds) {
+        if (activeCutSide === 'front') return bounds.max - cd / 2 + EPS_TOP / 2 + czo / 100;
+        return bounds.min + cd / 2 - EPS_TOP / 2 - czo / 100;
+    }
     const half = getStellaHalfDepth();
     if (activeCutSide === 'front') return half - cd / 2 + EPS_TOP / 2 + czo / 100;
     return -half + cd / 2 - EPS_TOP / 2 - czo / 100;
 }
 
 function computeFrameTopZ() {
-    // Центр cutter-меша. Его верхняя плоскость выступает за поверхность на EPS_TOP/2,
-    // нижняя уходит в камень ровно на заданную глубину.
+    // Для импортированной детали используем реальные мировые границы по Z.
     const czo = readSlider('inp-czo', 0);
-    const half = getStellaHalfDepth();
     const depth = computeFrameExtrudeDepth();
+    const bounds = getSelectedAssemblyZBounds();
+    if (bounds) {
+        return activeCutSide === 'front'
+            ? bounds.max - depth / 2 + EPS_TOP / 2 + czo / 100
+            : bounds.min + depth / 2 - EPS_TOP / 2 - czo / 100;
+    }
+    const half = getStellaHalfDepth();
     const center = half - depth / 2 + EPS_TOP / 2 + czo / 100;
     return activeCutSide === 'front' ? center : -center;
 }
