@@ -1425,7 +1425,7 @@ transformControl.addEventListener('dragging-changed', e => {
 });
 transformControl.showX = true;
 transformControl.showY = true;
-transformControl.showZ = false;
+transformControl.showZ = true;
 scene.add(transformControl);
 
 const fontLoader = new FontLoader();
@@ -5003,19 +5003,21 @@ document.getElementById('sel-top-shape').addEventListener('change', e => {
 document.getElementById('sel-material').addEventListener('change', e => {
     params.material = e.target.value;
 
-    // Материал основной CAD-заготовки не должен зависеть от наличия импортированных деталей.
-    if (stellaMesh && !assemblyItems.includes(stellaMesh)) {
+    // stellaMesh — только основная CAD-заготовка; импортированные детали
+    // хранятся отдельно в assemblyItems и не подменяют её ссылку.
+    if (stellaMesh) {
         if (Array.isArray(stellaMesh.material)) stellaMesh.material = getCSGMaterials();
         else stellaMesh.material = materials[params.material];
     }
 
-    // Для сборки применяем выбранный материал ко всем mesh-узлам активной детали/группы.
+    // Выбери деталь в списке сборки, затем выбери материал в этом списке.
     if (selectedAssemblyTarget) {
         selectedAssemblyTarget.traverse(node => {
             if (!node.isMesh) return;
             node.material = materials[params.material];
             node.material.needsUpdate = true;
         });
+        setStatus('Материал применён к выбранной модели/группе');
     }
 
     updatePriceDisplay();
@@ -5055,7 +5057,6 @@ function addImportedAssemblyModel(root, fileName) {
     assemblyRoot.add(root);
     let firstMesh = null;
     root.traverse(node => { if (node.isMesh && !firstMesh) firstMesh = node; });
-    if (!stellaMesh && firstMesh) stellaMesh = firstMesh;
     isImportedModel = true;
     const item = { id: root.userData.assemblyItemId, name: fileName || root.name, root };
     assemblyItems.push(item);
