@@ -404,16 +404,29 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
     </div>
 
     <div class="control-group">
-        <h3>📂 Импорт модели</h3>
+        <h3>📂 Импорт и сборка моделей</h3>
         <div class="btn-row">
             <div class="file-input-wrapper">
-                <button class="primary">📂 Импорт STL/GLB</button>
-                <input type="file" id="file-input" accept=".stl,.glb,.gltf">
+                <button class="primary">📂 Добавить STL/GLB</button>
+                <input type="file" id="file-input" accept=".stl,.glb,.gltf" multiple>
             </div>
             <button id="btn-export-stl" class="success">📦 Экспорт STL</button>
-            <button id="btn-export-glb" class="primary">🎨 Экспорт GLB (с текстурами)</button>
+            <button id="btn-export-glb" class="primary">🎨 Экспорт GLB</button>
         </div>
-        <div id="import-status" class="import-status">Готов к импорту</div>
+        <div id="import-status" class="import-status">Можно добавить несколько моделей подряд</div>
+        <div id="assembly-manager" style="margin-top:10px;">
+            <div class="btn-row">
+                <button id="btn-assembly-group" class="primary">🔗 Связать отмеченные</button>
+                <button id="btn-assembly-ungroup" class="secondary">Развязать группу</button>
+            </div>
+            <div class="btn-row" style="margin-top:6px;">
+                <button id="btn-assembly-move" class="active-tool">↔ Перемещение</button>
+                <button id="btn-assembly-rotate">⟳ Вращение</button>
+                <button id="btn-assembly-scale">⤢ Масштаб</button>
+            </div>
+            <div id="assembly-list" style="margin-top:8px;font-size:12px;">Модели ещё не добавлены</div>
+            <div class="draw-instructions">Отметь несколько моделей и нажми «Связать». Клик по названию выбирает объект для перемещения. Внутри связанной группы можно выбрать и двигать отдельную модель — связь сохранится.</div>
+        </div>
     </div>
 
     <div class="control-group">
@@ -991,6 +1004,16 @@ const container = document.getElementById('canvas-container');
 
 const scene = new THREE.Scene();
 
+// Отдельный корень для импортированных деталей и их сборок.
+const assemblyRoot = new THREE.Group();
+assemblyRoot.name = 'Импортированные модели';
+scene.add(assemblyRoot);
+const assemblyItems = [];
+const assemblyGroups = [];
+let assemblyIdCounter = 1;
+let selectedAssemblyTarget = null;
+const selectedAssemblyIds = new Set();
+
 let gridHelper = new THREE.GridHelper(10, 10, 0x444444, 0x222222);
 scene.add(gridHelper);
 
@@ -1403,7 +1426,7 @@ transformControl.addEventListener('dragging-changed', e => {
 transformControl.showX = true;
 transformControl.showY = true;
 transformControl.showZ = false;
-scene.add(transformControl);
+scene.add(transformControl.getHelper());
 
 const fontLoader = new FontLoader();
 fontLoader.load(
@@ -1435,15 +1458,22 @@ fontLoader.load(
    ============================================================ */
 
 function removeCurrentModel() {
-    if (importedGroup) {
-        importedGroup.traverse(node => { if (node.isMesh) disposeNode(node, true); });
-        scene.remove(importedGroup);
-        importedGroup = null;
-    }
-    if (stellaMesh) {
+    // При создании новой CAD-заготовки очищаем также все импортированные детали.
+    if (transformControl.object) transformControl.detach();
+    assemblyRoot.traverse(node => {
+        if (node.isMesh) disposeNode(node, true);
+    });
+    while (assemblyRoot.children.length) assemblyRoot.remove(assemblyRoot.children[0]);
+    assemblyItems.length = 0;
+    assemblyGroups.length = 0;
+    selectedAssemblyIds.clear();
+    selectedAssemblyTarget = null;
+    importedGroup = null;
+    if (stellaMesh && !assemblyRoot.children.includes(stellaMesh)) {
         disposeStellaMesh(stellaMesh);
-        stellaMesh = null;
     }
+    stellaMesh = null;
+    renderAssemblyList();
     clearCutPreview();
     clearPrimitivePreview();
     clearDimensions();
@@ -4990,11 +5020,138 @@ document.getElementById('inp-profile-depth').addEventListener('input', e => {
    ============================================================ */
 
 document.getElementById('file-input').addEventListener('change', e => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const ext = file.name.split('.').pop().toLowerCase();
-    if (ext === 'stl') importSTL(file);
-    else if (ext === 'glb' || ext === 'gltf') importGLB(file);
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    files.forEach(file => {
+        const ext = file.name.split('.').pop().toLowerCase();
+        if (ext === 'stl') importSTL(file);
+        else if (ext === 'glb' || ext === 'gltf') importGLB(file);
+        else setStatus('Формат не поддерживается: ' + file.name);
+    });
+    e.target.value = '';
+});
+
+function addImportedAssemblyModel(root, fileName) {
+    root.name = fileName || ('Модель ' + assemblyIdCounter);
+    root.userData.assemblyItemId = assemblyIdCounter++;
+    root.traverse(node => {
+        if (node.isMesh) {
+            node.castShadow = true;
+            node.receiveShadow = true;
+        }
+    });
+    assemblyRoot.add(root);
+    let firstMesh = null;
+    root.traverse(node => { if (node.isMesh && !firstMesh) firstMesh = node; });
+    if (!stellaMesh && firstMesh) stellaMesh = firstMesh;
+    isImportedModel = true;
+    const item = { id: root.userData.assemblyItemId, name: fileName || root.name, root };
+    assemblyItems.push(item);
+    selectedAssemblyIds.clear();
+    selectedAssemblyIds.add(item.id);
+    selectAssemblyTarget(root);
+    renderAssemblyList();
+    updatePriceDisplay();
+    setStatus('Добавлена модель: ' + item.name + '. Всего: ' + assemblyItems.length);
+}
+
+function selectAssemblyTarget(target) {
+    selectedAssemblyTarget = target || null;
+    if (transformControl.object) transformControl.detach();
+    if (target) transformControl.attach(target);
+    renderAssemblyList();
+}
+
+function renderAssemblyList() {
+    const host = document.getElementById('assembly-list');
+    if (!host) return;
+    if (!assemblyItems.length) {
+        host.textContent = 'Модели ещё не добавлены';
+        return;
+    }
+    const esc = value => String(value).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    const groupsMarkup = assemblyGroups.map(group => {
+        const active = selectedAssemblyTarget === group.root ? ' style="outline:1px solid var(--accent,#00d9ff);"' : '';
+        return '<div style="display:flex;gap:6px;align-items:center;margin:4px 0;padding:5px;border:1px solid var(--border-color,#555);border-radius:5px;"'+active+'><button type="button" data-assembly-select-group="'+group.id+'" style="flex:1;text-align:left;">📁 '+esc(group.name)+' ('+group.root.children.length+')</button><button type="button" data-assembly-ungroup="'+group.id+'">Развязать</button></div>';
+    }).join('');
+    const itemsMarkup = assemblyItems.map(item => {
+        const checked = selectedAssemblyIds.has(item.id) ? ' checked' : '';
+        const active = selectedAssemblyTarget === item.root ? ' style="outline:1px solid var(--accent,#00d9ff);"' : '';
+        const parentGroup = assemblyGroups.find(g => item.root.parent === g.root);
+        return '<div style="display:flex;gap:6px;align-items:center;margin:3px 0;padding:4px;border:1px solid var(--border-color,#555);border-radius:5px;"'+active+'><input type="checkbox" data-assembly-check="'+item.id+'"'+checked+'><button type="button" data-assembly-select="'+item.id+'" style="flex:1;text-align:left;overflow:hidden;text-overflow:ellipsis;">'+(parentGroup?'↳ ':'')+esc(item.name)+'</button><button type="button" data-assembly-delete="'+item.id+'" title="Удалить модель">✕</button></div>';
+    }).join('');
+    host.innerHTML = '<div style="font-weight:600;margin-bottom:5px;">Группы</div>'+(groupsMarkup || '<div style="opacity:.65;">Нет связанных групп</div>')+'<div style="font-weight:600;margin:8px 0 4px;">Модели</div>'+itemsMarkup;
+    host.querySelectorAll('[data-assembly-check]').forEach(el => el.addEventListener('change', () => {
+        const id = Number(el.dataset.assemblyCheck);
+        if (el.checked) selectedAssemblyIds.add(id); else selectedAssemblyIds.delete(id);
+    }));
+    host.querySelectorAll('[data-assembly-select]').forEach(el => el.addEventListener('click', () => {
+        const item = assemblyItems.find(x => x.id === Number(el.dataset.assemblySelect));
+        if (item) selectAssemblyTarget(item.root);
+    }));
+    host.querySelectorAll('[data-assembly-select-group]').forEach(el => el.addEventListener('click', () => {
+        const group = assemblyGroups.find(x => x.id === Number(el.dataset.assemblySelectGroup));
+        if (group) selectAssemblyTarget(group.root);
+    }));
+    host.querySelectorAll('[data-assembly-ungroup]').forEach(el => el.addEventListener('click', () => ungroupAssembly(Number(el.dataset.assemblyUngroup))));
+    host.querySelectorAll('[data-assembly-delete]').forEach(el => el.addEventListener('click', () => deleteAssemblyItem(Number(el.dataset.assemblyDelete))));
+}
+
+function groupSelectedAssemblyItems() {
+    const chosen = assemblyItems.filter(item => selectedAssemblyIds.has(item.id));
+    if (chosen.length < 2) return setStatus('Отметь минимум две модели для связывания');
+    if (chosen.some(item => assemblyGroups.some(g => item.root === g.root || item.root.parent === g.root))) {
+        return setStatus('Сначала развяжи существующие группы выбранных моделей');
+    }
+    const group = new THREE.Group();
+    group.name = 'Группа ' + (assemblyGroups.length + 1);
+    group.userData.assemblyGroupId = assemblyIdCounter++;
+    assemblyRoot.add(group);
+    chosen.forEach(item => group.attach(item.root)); // attach сохраняет мировые координаты
+    const record = { id: group.userData.assemblyGroupId, name: group.name, root: group };
+    assemblyGroups.push(record);
+    selectAssemblyTarget(group);
+    setStatus('Связано моделей: ' + chosen.length + '. Теперь можно двигать группу целиком.');
+}
+
+function ungroupAssembly(groupId) {
+    const index = assemblyGroups.findIndex(g => g.id === groupId);
+    if (index < 0) return;
+    const group = assemblyGroups[index];
+    const children = [...group.root.children];
+    children.forEach(child => assemblyRoot.attach(child)); // сохраняем мировые трансформации
+    assemblyRoot.remove(group.root);
+    assemblyGroups.splice(index, 1);
+    if (selectedAssemblyTarget === group.root) selectAssemblyTarget(children[0] || null);
+    renderAssemblyList();
+    setStatus('Группа развязана. Модели остались на своих местах.');
+}
+
+function deleteAssemblyItem(itemId) {
+    const item = assemblyItems.find(x => x.id === itemId);
+    if (!item) return;
+    if (selectedAssemblyTarget === item.root) selectAssemblyTarget(null);
+    item.root.traverse(node => { if (node.isMesh) disposeNode(node, true); });
+    if (item.root.parent) item.root.parent.remove(item.root);
+    assemblyItems.splice(assemblyItems.indexOf(item), 1);
+    selectedAssemblyIds.delete(itemId);
+    if (stellaMesh && !stellaMesh.parent) stellaMesh = null;
+    if (!assemblyItems.length) { stellaMesh = null; isImportedModel = false; }
+    renderAssemblyList();
+    updatePriceDisplay();
+}
+
+document.getElementById('btn-assembly-group')?.addEventListener('click', groupSelectedAssemblyItems);
+document.getElementById('btn-assembly-ungroup')?.addEventListener('click', () => {
+    const group = assemblyGroups.find(g => g.root === selectedAssemblyTarget);
+    if (group) ungroupAssembly(group.id);
+    else setStatus('Выбери связанную группу');
+});
+[['move','translate'],['rotate','rotate'],['scale','scale']].forEach(([id,mode]) => {
+    document.getElementById('btn-assembly-'+id)?.addEventListener('click', () => {
+        transformControl.setMode(mode);
+        ['move','rotate','scale'].forEach(key => document.getElementById('btn-assembly-'+key)?.classList.toggle('active-tool', key === id));
+    });
 });
 
 function importSTL(file) {
@@ -5004,24 +5161,21 @@ function importSTL(file) {
     reader.onload = event => {
         try {
             const geometry = loader.parse(event.target.result);
-            removeCurrentModel();
             geometry.computeVertexNormals();
             const box = new THREE.Box3().setFromBufferAttribute(geometry.getAttribute('position'));
             const center = new THREE.Vector3();
             box.getCenter(center);
             geometry.translate(-center.x, -box.min.y, -center.z);
-            stellaMesh = new THREE.Mesh(geometry, materials[params.material]);
-            stellaMesh.castShadow = true;
-            stellaMesh.receiveShadow = true;
-            scene.add(stellaMesh);
-            isImportedModel = true;
-            updatePriceDisplay();
-            setStatus('✅ STL импортирован');
+            const root = new THREE.Group();
+            const mesh = new THREE.Mesh(geometry, materials[params.material]);
+            root.add(mesh);
+            addImportedAssemblyModel(root, file.name);
         } catch (error) {
-            log(`STL: ${error.message}`);
-            setStatus('❌ Ошибка STL');
+            log('STL: ' + error.message);
+            setStatus('Ошибка STL: ' + error.message);
         } finally { showLoading(false); }
     };
+    reader.onerror = () => { showLoading(false); setStatus('Не удалось прочитать STL'); };
     reader.readAsArrayBuffer(file);
 }
 
@@ -5030,79 +5184,72 @@ function importGLB(file) {
     const loader = new GLTFLoader();
     const reader = new FileReader();
     reader.onload = event => {
-        try {
-            loader.parse(event.target.result, '', gltf => {
-                removeCurrentModel();
-                const group = gltf.scene;
-                const box = new THREE.Box3().setFromObject(group);
+        loader.parse(event.target.result, '', gltf => {
+            try {
+                const root = gltf.scene;
+                const box = new THREE.Box3().setFromObject(root);
                 const size = box.getSize(new THREE.Vector3());
                 const maxDim = Math.max(size.x, size.y, size.z);
-                group.scale.setScalar(1.0 / maxDim);
-                const newBox = new THREE.Box3().setFromObject(group);
+                if (maxDim > 0) root.scale.multiplyScalar(1.0 / maxDim);
+                const normalizedBox = new THREE.Box3().setFromObject(root);
                 const center = new THREE.Vector3();
-                newBox.getCenter(center);
-                group.position.sub(center);
-                const finalBox = new THREE.Box3().setFromObject(group);
-                group.position.y += -finalBox.min.y;
-                importedGroup = group;
-                scene.add(group);
-                let mainMesh = null;
-                group.traverse(child => { if (child.isMesh && !mainMesh) mainMesh = child; });
-                if (mainMesh) { stellaMesh = mainMesh; isImportedModel = true; }
-                updatePriceDisplay();
-                setStatus('✅ GLB импортирован');
-            }, error => { log(`GLB: ${error.message}`); setStatus('❌ Ошибка GLB'); });
-        } catch (error) {
-            log(`GLB: ${error.message}`);
-            setStatus('❌ Ошибка GLB');
-        } finally { showLoading(false); }
+                normalizedBox.getCenter(center);
+                root.position.sub(center);
+                const finalBox = new THREE.Box3().setFromObject(root);
+                root.position.y -= finalBox.min.y;
+                addImportedAssemblyModel(root, file.name);
+                showLoading(false);
+            } catch (error) {
+                log('GLB: ' + error.message);
+                setStatus('Ошибка GLB: ' + error.message);
+                showLoading(false);
+            }
+        }, error => {
+            log('GLB: ' + error.message);
+            setStatus('Ошибка GLB: ' + error.message);
+            showLoading(false);
+        });
     };
+    reader.onerror = () => { showLoading(false); setStatus('Не удалось прочитать GLB'); };
     reader.readAsArrayBuffer(file);
 }
 
+function getAssemblyExportTarget() {
+    return assemblyItems.length ? assemblyRoot : (importedGroup || stellaMesh);
+}
+
 document.getElementById('btn-export-stl').addEventListener('click', () => {
-    const target = importedGroup || stellaMesh;
-    if (!target) return setStatus('❌ Нет модели');
+    const target = getAssemblyExportTarget();
+    if (!target) return setStatus('Нет модели для экспорта');
     try {
+        target.updateMatrixWorld(true);
         const exporter = new STLExporter();
         const stlString = exporter.parse(target, { binary: false });
-        const blob = new Blob([stlString], { type: 'application/octet-stream' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `stella_${Date.now()}.stl`;
-        a.click();
-        URL.revokeObjectURL(url);
-        setStatus('📦 STL экспортирован');
+        downloadBlob(new Blob([stlString], { type: 'application/octet-stream' }), 'cnc_assembly_' + Date.now() + '.stl');
+        setStatus('STL экспортирован: все модели и их текущие положения включены');
     } catch (e) {
-        log(`Экспорт: ${e.message}`);
-        setStatus('❌ Ошибка экспорта');
+        log('Экспорт STL: ' + e.message);
+        setStatus('Ошибка экспорта STL: ' + e.message);
     }
 });
 
-// GLB сохраняет материалы, UV и встроенные изображения текстур. Экспортируем только модель,
-// не сцену целиком (без сетки, света, вспомогательных контуров и камер).
+// GLB сохраняет иерархию, материалы, UV и встроенные текстуры.
 document.getElementById('btn-export-glb').addEventListener('click', async () => {
-    const target = importedGroup || stellaMesh;
-    if (!target) return setStatus('❌ Нет модели');
-    if (!GLTFExporter) return setStatus('❌ GLTFExporter не загрузился');
-    showLoading(true, 'Подготовка GLB с материалами и текстурами...');
+    const target = getAssemblyExportTarget();
+    if (!target) return setStatus('Нет модели для экспорта');
+    if (!GLTFExporter) return setStatus('GLTFExporter не загрузился');
+    showLoading(true, 'Подготовка GLB-сборки...');
     try {
+        target.updateMatrixWorld(true);
         const exporter = new GLTFExporter();
         const result = await new Promise((resolve, reject) => {
             exporter.parse(target, resolve, reject, { binary: true, onlyVisible: true, trs: false });
         });
-        const blob = new Blob([result], { type: 'model/gltf-binary' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `stella_textured_${Date.now()}.glb`;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 1500);
-        setStatus('🎨 GLB экспортирован: текстуры и материалы встроены');
+        downloadBlob(new Blob([result], { type: 'model/gltf-binary' }), 'cnc_assembly_' + Date.now() + '.glb');
+        setStatus('GLB экспортирован: сборка, группы и материалы сохранены');
     } catch (e) {
-        log(`GLB экспорт: ${e.message}`);
-        setStatus('❌ Ошибка экспорта GLB');
+        log('Экспорт GLB: ' + e.message);
+        setStatus('Ошибка экспорта GLB: ' + e.message);
     } finally { showLoading(false); }
 });
 
