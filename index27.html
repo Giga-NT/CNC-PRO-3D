@@ -4480,7 +4480,7 @@ document.getElementById('btn-preview-pattern').addEventListener('click', () => {
    ============================================================ */
 
 function pushUndo() {
-    if (!stellaMesh || isImportedModel) return;
+    if (!stellaMesh) return;
     undoStack.push({
         geometry: stellaMesh.geometry.clone(),
         groups: (stellaMesh.geometry.groups || []).map(g => ({ ...g })),
@@ -4663,7 +4663,7 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
 
 document.getElementById('btn-cut').addEventListener('click', () => {
     if (!csgAvailable) return setStatus('❌ CSG не загружен');
-    if (!stellaMesh) return setStatus('❌ Нет модели');
+    if (!stellaMesh && !selectedAssemblyTarget) return setStatus('❌ Выбери модель для вырезания');
 
     const err = validateCut();
     if (err) return setStatus('⚠️ ' + err);
@@ -4747,7 +4747,6 @@ document.getElementById('btn-cut').addEventListener('click', () => {
 document.getElementById('btn-cut-all')?.addEventListener('click', () => {
     if (!csgAvailable) return setStatus('❌ CSG не загружен');
     if (!stellaMesh) return setStatus('❌ Нет модели');
-    if (isImportedModel) return setStatus('⚠️ Импортированную резать нельзя');
     const groups = groupContoursWithHoles();
     if (!groups.length) return setStatus('⚠️ Нет замкнутых контуров');
     const cx=readSlider('inp-cx',0), cy=readSlider('inp-cy',0.7), cs=readSlider('inp-cs',0.5);
@@ -4943,7 +4942,7 @@ document.querySelectorAll('#primitive-row button').forEach(btn => {
 
 function showPrimitivePreview() {
     clearPrimitivePreview();
-    if (!stellaMesh) return;
+    if (!stellaMesh && !selectedAssemblyTarget) return;
     const t = getPrimitiveTransform();
     let geo = makePrimitiveGeometry(currentPrimitiveType, t.size);
     
@@ -5667,6 +5666,7 @@ document.getElementById('btn-text-cancel').addEventListener('click', () => {
 
 document.getElementById('btn-engrave-text').addEventListener('click', () => {
     if (!csgAvailable || !stellaMesh || textLineMeshes.length === 0) return;
+    if (selectedAssemblyTarget) return setStatus('⚠️ Гравировка текста на импортированной детали пока не поддерживается');
 
     const depth = parseFloat(document.getElementById('inp-text-depth').value) || 0.008;
     const halfDepth = getStellaHalfDepth();
