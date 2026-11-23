@@ -5371,9 +5371,9 @@ function importSTL(file) {
             const head = new TextDecoder().decode(
                 new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 4096))
             ).trimStart();
-            const isAsciiSTL = /^solid(?:\\s|$)/i.test(head) &&
-                /\\bfacet\\s+normal\\b/i.test(head) &&
-                /\\bvertex\\b/i.test(head);
+            const isAsciiSTL = /^solid(?:\s|$)/i.test(head) &&
+                /\bfacet\s+normal\b/i.test(head) &&
+                /\bvertex\b/i.test(head);
 
             if (!isBinarySTL && !isAsciiSTL) {
                 throw new Error('Содержимое файла не соответствует формату STL');
