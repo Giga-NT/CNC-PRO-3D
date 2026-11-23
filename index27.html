@@ -408,13 +408,13 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
         <h3>📂 Импорт и сборка моделей</h3>
         <div class="btn-row">
             <div class="file-input-wrapper">
-                <button class="primary">📂 Добавить STL/GLB</button>
-                <input type="file" id="file-input" accept=".stl,.glb,.gltf" multiple>
+                <button class="primary">📂 Добавить STL</button>
+                <input type="file" id="file-input" accept=".stl,model/stl,application/sla" multiple>
             </div>
             <button id="btn-export-stl" class="success">📦 Экспорт STL</button>
             <button id="btn-export-glb" class="primary">🎨 Экспорт GLB</button>
         </div>
-        <div id="import-status" class="import-status">Можно добавить несколько моделей подряд</div>
+        <div id="import-status" class="import-status">Поддерживается только STL. Другие форматы не загружаются.</div>
         <div id="assembly-manager" style="margin-top:10px;">
             <div class="btn-row">
                 <button id="btn-assembly-group" class="primary">🔗 Связать отмеченные</button>
@@ -4551,6 +4551,7 @@ document.getElementById('btn-undo').addEventListener('click', () => {
         if (state.mesh && state.mesh.parent) {
             if (state.mesh.geometry) state.mesh.geometry.dispose();
             state.mesh.geometry = state.geometry;
+            if (state.material) state.mesh.material = state.material;
             state.mesh.geometry.computeBoundingBox();
             state.mesh.geometry.computeBoundingSphere();
         } else if (state.geometry) state.geometry.dispose();
@@ -4607,7 +4608,9 @@ function createAssemblyTargetBrush(mesh) {
     mesh.updateWorldMatrix(true, false);
     const geometry = normalizeForCSG(mesh.geometry, 0, true);
     const brush = new Brush(geometry);
-    brush.material = mesh.material;
+    // Как и основная CAD-модель: материал 0 — поверхность модели,
+    // материал 1 — боковые поверхности, материал 2 — свежая поверхность реза.
+    brush.material = getCSGMaterials();
     const world = mesh.matrixWorld;
     world.decompose(brush.position, brush.quaternion, brush.scale);
     brush.updateMatrixWorld(true);
@@ -4635,7 +4638,7 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
     await new Promise(resolve => requestAnimationFrame(() => resolve()));
 
     if (isAssemblyTarget) {
-        assemblyUndoStack.push({ mesh: targetMesh, geometry: targetMesh.geometry.clone() });
+        assemblyUndoStack.push({ mesh: targetMesh, geometry: targetMesh.geometry.clone(), material: targetMesh.material });
         if (assemblyUndoStack.length > 10) {
             const oldest = assemblyUndoStack.shift();
             if (oldest.geometry) oldest.geometry.dispose();
@@ -4716,6 +4719,9 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
             targetMesh.geometry.computeBoundingSphere();
             targetMesh.geometry.attributes.position.needsUpdate = true;
             targetMesh.geometry.attributes.normal.needsUpdate = true;
+            // Важно назначить массив материалов CSG и самому Mesh:
+            // иначе группы поверхности реза используют исходную текстуру STL.
+            targetMesh.material = getCSGMaterials();
             targetMesh.updateMatrixWorld(true);
             setStatus('✅ CSG применён к выбранной модели сборки');
         } else {
@@ -4734,6 +4740,7 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
             if (state && state.mesh && state.mesh.parent) {
                 if (state.mesh.geometry) state.mesh.geometry.dispose();
                 state.mesh.geometry = state.geometry;
+                if (state.material) state.mesh.material = state.material;
             }
         } else {
             popUndoState();
@@ -5175,12 +5182,21 @@ document.getElementById('inp-profile-depth').addEventListener('input', e => {
 document.getElementById('file-input').addEventListener('change', e => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
+    const rejected = [];
     files.forEach(file => {
-        const ext = file.name.split('.').pop().toLowerCase();
-        if (ext === 'stl') importSTL(file);
-        else if (ext === 'glb' || ext === 'gltf') importGLB(file);
-        else setStatus('Формат не поддерживается: ' + file.name);
+        if (!/\.stl$/i.test(file.name)) {
+            rejected.push(file.name);
+            log('[IMPORT] Отклонён файл (разрешён только STL): ' + file.name);
+            return;
+        }
+        importSTL(file);
     });
+    if (rejected.length) {
+        const message = 'Загрузка отменена: поддерживается только STL. Отклонено: ' + rejected.join(', ');
+        setStatus(message);
+        const status = document.getElementById('import-status');
+        if (status) status.textContent = message;
+    }
     e.target.value = '';
 });
 
@@ -5332,14 +5348,58 @@ document.getElementById('btn-assembly-ungroup')?.addEventListener('click', () =>
 });
 
 function importSTL(file) {
+    if (!file || !/\.stl$/i.test(file.name)) {
+        setStatus('Загрузка отклонена: разрешены только файлы STL');
+        return;
+    }
     showLoading(true);
     const loader = new STLLoader();
     const reader = new FileReader();
     reader.onload = event => {
+        let geometry = null;
         try {
-            const geometry = loader.parse(event.target.result);
+            const buffer = event.target.result;
+            if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < 84) {
+                throw new Error('Файл слишком короткий и не похож на STL');
+            }
+
+            // Проверяем содержимое, а не только расширение: поддерживаем
+            // стандартный бинарный STL и ASCII STL.
+            const view = new DataView(buffer);
+            const triangleCount = view.getUint32(80, true);
+            const isBinarySTL = triangleCount > 0 && 84 + triangleCount * 50 === buffer.byteLength;
+            const head = new TextDecoder().decode(
+                new Uint8Array(buffer, 0, Math.min(buffer.byteLength, 4096))
+            ).trimStart();
+            const isAsciiSTL = /^solid(?:\\s|$)/i.test(head) &&
+                /\\bfacet\\s+normal\\b/i.test(head) &&
+                /\\bvertex\\b/i.test(head);
+
+            if (!isBinarySTL && !isAsciiSTL) {
+                throw new Error('Содержимое файла не соответствует формату STL');
+            }
+
+            geometry = loader.parse(buffer);
+            const position = geometry.getAttribute('position');
+            if (!position || position.count < 3) {
+                throw new Error('В STL отсутствуют треугольники');
+            }
+            for (let i = 0; i < position.count; i++) {
+                if (!Number.isFinite(position.getX(i)) ||
+                    !Number.isFinite(position.getY(i)) ||
+                    !Number.isFinite(position.getZ(i))) {
+                    throw new Error('STL содержит некорректные координаты');
+                }
+            }
+
+            geometry.computeBoundingBox();
+            const size = geometry.boundingBox.getSize(new THREE.Vector3());
+            if (Math.max(size.x, size.y, size.z) < 1e-8) {
+                throw new Error('STL-модель имеет нулевые габариты');
+            }
+
             geometry.computeVertexNormals();
-            const box = new THREE.Box3().setFromBufferAttribute(geometry.getAttribute('position'));
+            const box = geometry.boundingBox;
             const center = new THREE.Vector3();
             box.getCenter(center);
             geometry.translate(-center.x, -box.min.y, -center.z);
@@ -5347,50 +5407,23 @@ function importSTL(file) {
             const mesh = new THREE.Mesh(geometry, materials[params.material]);
             root.add(mesh);
             addImportedAssemblyModel(root, file.name);
+            geometry = null; // Геометрия передана Mesh — не освобождаем её.
+            const status = document.getElementById('import-status');
+            if (status) status.textContent = 'STL загружен: ' + file.name;
         } catch (error) {
+            if (geometry) geometry.dispose();
             log('STL: ' + error.message);
-            setStatus('Ошибка STL: ' + error.message);
+            setStatus('Ошибка импорта STL: ' + error.message);
+            const status = document.getElementById('import-status');
+            if (status) status.textContent = 'STL не загружен: ' + error.message;
         } finally { showLoading(false); }
     };
-    reader.onerror = () => { showLoading(false); setStatus('Не удалось прочитать STL'); };
-    reader.readAsArrayBuffer(file);
-}
-
-function importGLB(file) {
-    showLoading(true);
-    const loader = new GLTFLoader();
-    const reader = new FileReader();
-    reader.onload = event => {
-        loader.parse(event.target.result, '', gltf => {
-            try {
-                const root = gltf.scene;
-                const box = new THREE.Box3().setFromObject(root);
-                const size = box.getSize(new THREE.Vector3());
-                const maxDim = Math.max(size.x, size.y, size.z);
-                if (maxDim > 0) root.scale.multiplyScalar(1.0 / maxDim);
-                const normalizedBox = new THREE.Box3().setFromObject(root);
-                const center = new THREE.Vector3();
-                normalizedBox.getCenter(center);
-                root.position.sub(center);
-                const finalBox = new THREE.Box3().setFromObject(root);
-                root.position.y -= finalBox.min.y;
-                addImportedAssemblyModel(root, file.name);
-                showLoading(false);
-            } catch (error) {
-                log('GLB: ' + error.message);
-                setStatus('Ошибка GLB: ' + error.message);
-                showLoading(false);
-            }
-        }, error => {
-            log('GLB: ' + error.message);
-            setStatus('Ошибка GLB: ' + error.message);
-            showLoading(false);
-        });
+    reader.onerror = () => {
+        showLoading(false);
+        setStatus('Не удалось прочитать STL');
     };
-    reader.onerror = () => { showLoading(false); setStatus('Не удалось прочитать GLB'); };
     reader.readAsArrayBuffer(file);
 }
-
 function getAssemblyExportTarget() {
     return assemblyItems.length ? assemblyRoot : (importedGroup || stellaMesh);
 }
