@@ -5002,10 +5002,22 @@ document.getElementById('sel-top-shape').addEventListener('change', e => {
 
 document.getElementById('sel-material').addEventListener('change', e => {
     params.material = e.target.value;
-    if (stellaMesh && !isImportedModel) {
+
+    // Материал основной CAD-заготовки не должен зависеть от наличия импортированных деталей.
+    if (stellaMesh && !assemblyItems.includes(stellaMesh)) {
         if (Array.isArray(stellaMesh.material)) stellaMesh.material = getCSGMaterials();
         else stellaMesh.material = materials[params.material];
     }
+
+    // Для сборки применяем выбранный материал ко всем mesh-узлам активной детали/группы.
+    if (selectedAssemblyTarget) {
+        selectedAssemblyTarget.traverse(node => {
+            if (!node.isMesh) return;
+            node.material = materials[params.material];
+            node.material.needsUpdate = true;
+        });
+    }
+
     updatePriceDisplay();
 });
 
