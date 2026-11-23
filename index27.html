@@ -1815,6 +1815,7 @@ function createStella() {
     stellaMesh.castShadow = true;
     stellaMesh.receiveShadow = true;
     scene.add(stellaMesh);
+    registerPrimaryAssemblyModel(stellaMesh);
 
     clearUndoStack();
     document.getElementById('btn-undo').disabled = true;
@@ -1862,6 +1863,7 @@ function createStellaFromProfile(frontPts, backPts) {
     stellaMesh.castShadow = true;
     stellaMesh.receiveShadow = true;
     scene.add(stellaMesh);
+    registerPrimaryAssemblyModel(stellaMesh);
 
     isCustomProfile = true;
     clearUndoStack();
@@ -5068,23 +5070,22 @@ document.getElementById('sel-top-shape').addEventListener('change', e => {
 document.getElementById('sel-material').addEventListener('change', e => {
     params.material = e.target.value;
 
-    // stellaMesh — только основная CAD-заготовка; импортированные детали
-    // хранятся отдельно в assemblyItems и не подменяют её ссылку.
-    if (stellaMesh) {
-        if (Array.isArray(stellaMesh.material)) stellaMesh.material = getCSGMaterials();
-        else stellaMesh.material = materials[params.material];
+    // Меняем материал ТОЛЬКО у активной модели/группы из списка сборки.
+    if (!selectedAssemblyTarget) {
+        setStatus('Сначала выбери модель в списке сборки');
+        return;
     }
 
-    // Выбери деталь в списке сборки, затем выбери материал в этом списке.
-    if (selectedAssemblyTarget) {
-        selectedAssemblyTarget.traverse(node => {
-            if (!node.isMesh) return;
-            node.material = materials[params.material];
-            node.material.needsUpdate = true;
-        });
-        setStatus('Материал применён к выбранной модели/группе');
-    }
+    const isPrimary = selectedAssemblyTarget === stellaMesh;
+    selectedAssemblyTarget.traverse(node => {
+        if (!node.isMesh) return;
+        // У основной CAD-заготовки сохраняем раздельные материалы граней/фасок.
+        node.material = isPrimary ? getCSGMaterials() : materials[params.material];
+        if (Array.isArray(node.material)) node.material.forEach(mat => { mat.needsUpdate = true; });
+        else node.material.needsUpdate = true;
+    });
 
+    setStatus('Материал применён только к выбранной модели');
     updatePriceDisplay();
 });
 
@@ -5109,6 +5110,22 @@ document.getElementById('file-input').addEventListener('change', e => {
     });
     e.target.value = '';
 });
+
+function registerPrimaryAssemblyModel(mesh) {
+    if (!mesh) return;
+    const item = {
+        id: mesh.userData.assemblyItemId || assemblyIdCounter++,
+        name: 'Основная CAD-модель',
+        root: mesh,
+        isPrimary: true
+    };
+    mesh.userData.assemblyItemId = item.id;
+    assemblyItems.push(item);
+    selectedAssemblyIds.clear();
+    selectedAssemblyIds.add(item.id);
+    selectAssemblyTarget(mesh);
+    renderAssemblyList();
+}
 
 function addImportedAssemblyModel(root, fileName) {
     root.name = fileName || ('Модель ' + assemblyIdCounter);
@@ -5213,8 +5230,11 @@ function deleteAssemblyItem(itemId) {
     if (item.root.parent) item.root.parent.remove(item.root);
     assemblyItems.splice(assemblyItems.indexOf(item), 1);
     selectedAssemblyIds.delete(itemId);
-    if (stellaMesh && !stellaMesh.parent) stellaMesh = null;
-    if (!assemblyItems.length) { stellaMesh = null; isImportedModel = false; }
+    if (item.isPrimary && stellaMesh === item.root) {
+        stellaMesh = null;
+        isCustomProfile = false;
+    }
+    if (!assemblyItems.some(x => !x.isPrimary)) isImportedModel = false;
     renderAssemblyList();
     updatePriceDisplay();
 }
