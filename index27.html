@@ -4764,7 +4764,7 @@ document.getElementById('btn-cut').addEventListener('click', () => {
 /* ---- CUT ALL CONTOURS (для многосоставных SVG-орнаментов) ---- */
 document.getElementById('btn-cut-all')?.addEventListener('click', () => {
     if (!csgAvailable) return setStatus('❌ CSG не загружен');
-    if (!stellaMesh) return setStatus('❌ Нет модели');
+    if (!stellaMesh && !selectedAssemblyTarget) return setStatus('❌ Выбери модель для вырезания');
     const groups = groupContoursWithHoles();
     if (!groups.length) return setStatus('⚠️ Нет замкнутых контуров');
     const cx=readSlider('inp-cx',0), cy=readSlider('inp-cy',0.7), cs=readSlider('inp-cs',0.5);
@@ -4807,7 +4807,6 @@ function getEffectiveContourFor(ptsArr) {
 document.getElementById('btn-apply-pattern').addEventListener('click', () => {
     if (!csgAvailable) return setStatus('❌ CSG не загружен');
     if (!stellaMesh) return setStatus('❌ Нет модели');
-    if (isImportedModel) return setStatus('⚠️ Импортированную резать нельзя');
 
     const err = validateCut();
     if (err) return setStatus('⚠️ ' + err);
