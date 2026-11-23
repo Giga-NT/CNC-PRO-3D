@@ -4633,12 +4633,43 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
         setStatus('⏳ Построение BVH и подготовка модели…');
         showLoading(true, 'Построение BVH и подготовка модели…');
         brush = isAssemblyTarget ? createAssemblyTargetBrush(targetMesh) : createStellaBrush();
+        brush.updateMatrixWorld(true);
+        const targetBounds = new THREE.Box3().setFromObject(brush);
+        const cutterBounds = cutters.map(c => {
+            c.updateMatrixWorld(true);
+            return new THREE.Box3().setFromObject(c);
+        });
+        const overlaps = cutterBounds.map(b => targetBounds.intersectsBox(b));
+        log('[CSG DIAG] target=' + (isPrimaryTarget ? 'primary' : isAssemblyTarget ? 'imported' : 'legacy') +
+            ', meshes=' + (isAssemblyTarget ? 1 : 1) +
+            ', targetBounds=' + JSON.stringify({min:targetBounds.min.toArray(),max:targetBounds.max.toArray()}) +
+            ', cutterBounds=' + JSON.stringify(cutterBounds.map(b => ({min:b.min.toArray(),max:b.max.toArray()}))) +
+            ', overlaps=' + overlaps.join(','));
+        if (overlaps.every(v => !v)) {
+            setStatus('⚠️ Резец не пересекает выбранную модель. Перемести примитив внутрь заготовки.');
+            disposeCSGBrush(brush);
+            brush = null;
+            cutters.forEach(disposeCSGBrush);
+            showLoading(false);
+            if (isAssemblyTarget) {
+                const state = assemblyUndoStack.pop();
+                if (state && state.geometry) state.geometry.dispose();
+            } else {
+                popUndoState();
+            }
+            document.getElementById('btn-undo').disabled = assemblyUndoStack.length === 0 && undoStack.length === 0;
+            return false;
+        }
         let success = 0;
 
         setStatus('⏳ Выполнение CSG: ' + cutters.length + ' операция(й)…');
         cutters.forEach((c, idx) => {
             try {
+                const beforeCount = brush.geometry.getAttribute('position')?.count || 0;
                 const nextBrush = evaluator.evaluate(brush, c, op);
+                const afterCount = nextBrush.geometry.getAttribute('position')?.count || 0;
+                log('[CSG DIAG] operation=' + (op === SUBTRACTION ? 'SUBTRACTION' : op === ADDITION ? 'ADDITION' : 'INTERSECTION') +
+                    ', vertices=' + beforeCount + ' -> ' + afterCount);
                 disposeCSGBrush(brush);
                 brush = nextBrush;
                 success++;
