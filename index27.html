@@ -1013,6 +1013,7 @@ const assemblyGroups = [];
 let assemblyIdCounter = 1;
 let selectedAssemblyTarget = null;
 const selectedAssemblyIds = new Set();
+const assemblyUndoStack = [];
 
 let gridHelper = new THREE.GridHelper(10, 10, 0x444444, 0x222222);
 scene.add(gridHelper);
@@ -4493,6 +4494,18 @@ function pushUndo() {
 }
 
 document.getElementById('btn-undo').addEventListener('click', () => {
+    if (assemblyUndoStack.length) {
+        const state = assemblyUndoStack.pop();
+        if (state.mesh && state.mesh.parent) {
+            if (state.mesh.geometry) state.mesh.geometry.dispose();
+            state.mesh.geometry = state.geometry;
+            state.mesh.geometry.computeBoundingBox();
+            state.mesh.geometry.computeBoundingSphere();
+        } else if (state.geometry) state.geometry.dispose();
+        document.getElementById('btn-undo').disabled = assemblyUndoStack.length === 0 && undoStack.length === 0;
+        setStatus('↶ Отменено: импортированная модель');
+        return;
+    }
     if (undoStack.length === 0 || !stellaMesh) return;
     const state = undoStack.pop();
     disposeStellaMesh(stellaMesh);
@@ -4524,73 +4537,101 @@ document.getElementById('btn-undo').addEventListener('click', () => {
    24. CSG OPERATIONS
    ============================================================ */
 
+function getSelectedAssemblyMesh() {
+    if (!selectedAssemblyTarget) return null;
+    const meshes = [];
+    selectedAssemblyTarget.updateWorldMatrix(true, true);
+    selectedAssemblyTarget.traverse(node => { if (node.isMesh && node.geometry) meshes.push(node); });
+    if (meshes.length !== 1) {
+        setStatus(meshes.length
+            ? '⚠️ Для CSG выбери модель с одной сеткой. Многосеточные GLB пока не поддерживаются.'
+            : '⚠️ В выбранной модели нет геометрии');
+        return false;
+    }
+    return meshes[0];
+}
+
+function createAssemblyTargetBrush(mesh) {
+    mesh.updateWorldMatrix(true, false);
+    const geometry = normalizeForCSG(mesh.geometry, 0, true);
+    const brush = new Brush(geometry);
+    brush.material = mesh.material;
+    const world = mesh.matrixWorld;
+    world.decompose(brush.position, brush.quaternion, brush.scale);
+    brush.updateMatrixWorld(true);
+    return brush;
+}
+
 async function runCSG(cutters, label, onSuccess, operation = null) {
-    if (!csgAvailable || !stellaMesh) return false;
+    const assemblyMesh = selectedAssemblyTarget ? getSelectedAssemblyMesh() : null;
+    const targetMesh = selectedAssemblyTarget ? assemblyMesh : stellaMesh;
+    if (!csgAvailable || !targetMesh) {
+        cutters.forEach(disposeCSGBrush);
+        return false;
+    }
+    const isAssemblyTarget = !!selectedAssemblyTarget;
     const op = operation || SUBTRACTION;
 
     setStatus('⏳ Подготовка вырезания…');
-    showLoading(true, 'Подготовка к вычитанию…');
-    // Даём браузеру отрисовать экран загрузки до тяжёлого синхронного CSG.
+    showLoading(true, 'Подготовка вырезания…');
     await new Promise(resolve => requestAnimationFrame(() => resolve()));
-    pushUndo();
+
+    if (isAssemblyTarget) {
+        assemblyUndoStack.push({ mesh: targetMesh, geometry: targetMesh.geometry.clone() });
+        if (assemblyUndoStack.length > 10) {
+            const oldest = assemblyUndoStack.shift();
+            if (oldest.geometry) oldest.geometry.dispose();
+        }
+    } else {
+        pushUndo();
+    }
+    document.getElementById('btn-undo').disabled = false;
 
     let brush = null;
     try {
         setStatus('⏳ Построение BVH и подготовка модели…');
         showLoading(true, 'Построение BVH и подготовка модели…');
-        brush = createStellaBrush();
+        brush = isAssemblyTarget ? createAssemblyTargetBrush(targetMesh) : createStellaBrush();
         let success = 0;
 
-        setStatus(`⏳ Вычитание из заготовки: ${cutters.length} операция(й)…`);
-        showLoading(true, 'Вычитание контура из заготовки…');
+        setStatus('⏳ Выполнение CSG: ' + cutters.length + ' операция(й)…');
         cutters.forEach((c, idx) => {
-            let nextBrush = null;
             try {
-                nextBrush = evaluator.evaluate(brush, c, op);
+                const nextBrush = evaluator.evaluate(brush, c, op);
                 disposeCSGBrush(brush);
                 brush = nextBrush;
                 success++;
             } catch (e) {
-                log(`CSG #${idx + 1}: ${e.message}`);
+                log('CSG #' + (idx + 1) + ': ' + e.message);
             } finally {
                 disposeCSGBrush(c);
             }
         });
 
-        if (success === 0) {
-            if (brush) disposeCSGBrush(brush);
-            popUndoState();
-            setStatus('⚠️ Ни одна операция не выполнена');
-            showLoading(false);
-            return false;
-        }
-
+        if (!success) throw new Error('Ни одна CSG-операция не выполнена');
         const finalGeometry = brush.geometry;
         brush.geometry = null;
-
-        // Проверка «не пустая»
         const pos = finalGeometry.getAttribute('position');
         if (!pos || pos.count < 12) {
             finalGeometry.dispose();
-            popUndoState();
-            setStatus('⚠️ Модель уничтожена, откат');
-            showLoading(false);
-            return false;
+            throw new Error('Результат пустой — операция отменена');
         }
 
-        replaceStellaFromBrush({ geometry: finalGeometry });
-
-        if (!isMeshValid(stellaMesh)) {
-            // Откат
-            popUndoState();
-            // Восстанавливаем предыдущую геометрию
-            if (undoStack.length > 0) {
-                const prev = undoStack[undoStack.length - 1];
-                // ... но проще: заново создать
-            }
-            setStatus('⚠️ Результат пустой');
-            showLoading(false);
-            return false;
+        if (isAssemblyTarget) {
+            if (targetMesh.geometry) targetMesh.geometry.dispose();
+            targetMesh.geometry = finalGeometry;
+            targetMesh.geometry.computeBoundingBox();
+            targetMesh.geometry.computeBoundingSphere();
+            targetMesh.geometry.computeVertexNormals();
+            targetMesh.geometry.computeBoundingBox();
+            targetMesh.geometry.computeBoundingSphere();
+            targetMesh.geometry.attributes.position.needsUpdate = true;
+            targetMesh.geometry.attributes.normal.needsUpdate = true;
+            targetMesh.updateMatrixWorld(true);
+            setStatus('✅ CSG применён к выбранной импортированной модели');
+        } else {
+            replaceStellaFromBrush({ geometry: finalGeometry });
+            if (!isMeshValid(stellaMesh)) throw new Error('Результат основной модели некорректен');
         }
 
         clearCutPreview();
@@ -4599,10 +4640,20 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
         return true;
     } catch (e) {
         if (brush) disposeCSGBrush(brush);
-        popUndoState();
-        log(`CSG ошибка: ${e.message}`);
+        if (isAssemblyTarget) {
+            const state = assemblyUndoStack.pop();
+            if (state && state.mesh && state.mesh.parent) {
+                if (state.mesh.geometry) state.mesh.geometry.dispose();
+                state.mesh.geometry = state.geometry;
+            }
+        } else {
+            popUndoState();
+        }
+        document.getElementById('btn-undo').disabled = assemblyUndoStack.length === 0 && undoStack.length === 0;
+        cutters.forEach(disposeCSGBrush);
+        log('CSG ошибка: ' + e.message);
         console.error(e);
-        setStatus('❌ Ошибка CSG');
+        setStatus('❌ ' + e.message);
         showLoading(false);
         return false;
     }
@@ -4613,7 +4664,6 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
 document.getElementById('btn-cut').addEventListener('click', () => {
     if (!csgAvailable) return setStatus('❌ CSG не загружен');
     if (!stellaMesh) return setStatus('❌ Нет модели');
-    if (isImportedModel) return setStatus('⚠️ Импортированную резать нельзя');
 
     const err = validateCut();
     if (err) return setStatus('⚠️ ' + err);
@@ -4928,8 +4978,7 @@ document.getElementById('btn-prim-preview').addEventListener('click', showPrimit
 });
 
 function runPrimitiveCSG(operation, opName) {
-    if (!csgAvailable || !stellaMesh) return setStatus('❌ Нет модели/CSG');
-    if (isImportedModel) return setStatus('⚠️ Импортированную модель менять нельзя');
+    if (!csgAvailable || (!stellaMesh && !selectedAssemblyTarget)) return setStatus('❌ Нет модели/CSG');
 
     const t = getPrimitiveTransform();
     let geo = makePrimitiveGeometry(currentPrimitiveType, t.size);
@@ -5618,7 +5667,6 @@ document.getElementById('btn-text-cancel').addEventListener('click', () => {
 
 document.getElementById('btn-engrave-text').addEventListener('click', () => {
     if (!csgAvailable || !stellaMesh || textLineMeshes.length === 0) return;
-    if (isImportedModel) return setStatus('⚠️ Импортированную гравировать нельзя');
 
     const depth = parseFloat(document.getElementById('inp-text-depth').value) || 0.008;
     const halfDepth = getStellaHalfDepth();
