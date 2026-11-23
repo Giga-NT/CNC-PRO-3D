@@ -5714,7 +5714,11 @@ document.addEventListener('keydown', e => {
     // Ctrl+Z / Ctrl+Y обрабатываем до проверки фокуса:
     // после выбора SVG браузер оставляет фокус на скрытом file-input,
     // из-за чего прежняя проверка INPUT блокировала историю рисования.
-    if (e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'z') {
+    // Используем e.code: он не зависит от выбранной раскладки клавиатуры.
+    // e.key на русской раскладке для этих клавиш возвращает «я» и «н».
+    const undoKey = e.code === 'KeyZ' || e.key.toLowerCase() === 'z' || e.key.toLowerCase() === 'я';
+    const redoKey = e.code === 'KeyY' || e.key.toLowerCase() === 'y' || e.key.toLowerCase() === 'н';
+    if (e.ctrlKey && !e.altKey && undoKey) {
         e.preventDefault();
         undoDraw();
         redrawDrawCanvas();
@@ -5722,7 +5726,7 @@ document.addEventListener('keydown', e => {
         schedulePreview();
         return;
     }
-    if (e.ctrlKey && !e.altKey && e.key.toLowerCase() === 'y') {
+    if (e.ctrlKey && !e.altKey && redoKey) {
         e.preventDefault();
         redoDraw();
         redrawDrawCanvas();
