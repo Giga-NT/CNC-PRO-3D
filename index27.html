@@ -397,6 +397,7 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
         </div>
 
         <div class="btn-row">
+            <button id="btn-prim-subtract" class="danger">➖ SUBTRACT</button>
             <button id="btn-prim-union" class="success">➕ UNION</button>
             <button id="btn-prim-intersect" class="primary">⋂ INTERSECT</button>
             <button id="btn-prim-preview" class="primary">👁️ Превью</button>
@@ -4597,13 +4598,19 @@ function createAssemblyTargetBrush(mesh) {
 }
 
 async function runCSG(cutters, label, onSuccess, operation = null) {
-    const assemblyMesh = selectedAssemblyTarget ? getSelectedAssemblyMesh() : null;
-    const targetMesh = selectedAssemblyTarget ? assemblyMesh : stellaMesh;
+    const selectedItem = selectedAssemblyTarget
+        ? assemblyItems.find(item => item.root === selectedAssemblyTarget)
+        : null;
+    const isPrimaryTarget = !!(selectedItem && selectedItem.isPrimary);
+    const isAssemblyTarget = !!selectedAssemblyTarget && !isPrimaryTarget;
+    const assemblyMesh = isAssemblyTarget ? getSelectedAssemblyMesh() : null;
+    const targetMesh = isAssemblyTarget ? assemblyMesh : (isPrimaryTarget ? selectedAssemblyTarget : stellaMesh);
     if (!csgAvailable || !targetMesh) {
         cutters.forEach(disposeCSGBrush);
+        if (!csgAvailable) setStatus('❌ CSG не загружен');
+        else if (selectedAssemblyTarget && !targetMesh) setStatus('⚠️ Не удалось определить сетку выбранной модели');
         return false;
     }
-    const isAssemblyTarget = !!selectedAssemblyTarget;
     const op = operation || SUBTRACTION;
 
     setStatus('⏳ Подготовка вырезания…');
@@ -4662,7 +4669,7 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
             targetMesh.geometry.attributes.position.needsUpdate = true;
             targetMesh.geometry.attributes.normal.needsUpdate = true;
             targetMesh.updateMatrixWorld(true);
-            setStatus('✅ CSG применён к выбранной импортированной модели');
+            setStatus('✅ CSG применён к выбранной модели сборки');
         } else {
             replaceStellaFromBrush({ geometry: finalGeometry });
             if (!isMeshValid(stellaMesh)) throw new Error('Результат основной модели некорректен');
@@ -5037,6 +5044,10 @@ function runPrimitiveCSG(operation, opName) {
         setStatus(`✅ ${opName} выполнен`);
     }, operation);
 }
+
+document.getElementById('btn-prim-subtract').addEventListener('click', () => {
+    runPrimitiveCSG(SUBTRACTION, 'SUBTRACT');
+});
 
 document.getElementById('btn-prim-union').addEventListener('click', () => {
     runPrimitiveCSG(ADDITION, 'UNION');
