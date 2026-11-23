@@ -4806,7 +4806,7 @@ function getEffectiveContourFor(ptsArr) {
 
 document.getElementById('btn-apply-pattern').addEventListener('click', () => {
     if (!csgAvailable) return setStatus('❌ CSG не загружен');
-    if (!stellaMesh) return setStatus('❌ Нет модели');
+    if (!stellaMesh && !selectedAssemblyTarget) return setStatus('❌ Выбери модель для вырезания');
 
     const err = validateCut();
     if (err) return setStatus('⚠️ ' + err);
