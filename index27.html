@@ -3719,12 +3719,26 @@ function offsetClosedPathAligned(points, distance) {
         const an = { x:-ay/al, y:ax/al }, bn = { x:-by/bl, y:bx/bl };
         const dot = Math.max(-1, Math.min(1, (ax*bx + ay*by)/(al*bl)));
         const denom = 1 + dot;
-        if (denom < 1e-7) throw new Error('В контуре есть почти развёрнутый угол; невозможно надёжно построить шов');
-        const mx = (an.x + bn.x) / denom;
-        const my = (an.y + bn.y) / denom;
+        let mx = 0, my = 0;
+        if (denom < 1e-7) {
+            // Почти развёрнутый угол: используем безопасную биссектрису,
+            // чтобы не создавать бесконечный выступ на самопересечении.
+            mx = an.x;
+            my = an.y;
+        } else {
+            mx = (an.x + bn.x) / denom;
+            my = (an.y + bn.y) / denom;
+        }
+
+        // Ограничиваем длину miter на острых углах. Ранее весь preview
+        // падал при miter > 50; теперь угол локально срезается до лимита.
         const miter = Math.hypot(mx, my);
-        if (!Number.isFinite(miter) || miter > 50) {
-            throw new Error('Слишком острый угол контура: смещение создаёт недопустимо длинный выступ');
+        const maxMiter = 10;
+        if (!Number.isFinite(miter)) throw new Error('Не удалось вычислить направление смещения контура');
+        if (miter > maxMiter) {
+            const factor = maxMiter / miter;
+            mx *= factor;
+            my *= factor;
         }
         result.push({ x:cur.x + mx*distance, y:cur.y + my*distance });
     }
