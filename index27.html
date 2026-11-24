@@ -468,6 +468,16 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
             <input type="file" id="relief-image-file" accept="image/png,image/jpeg,image/webp" style="width:100%;margin-top:5px;">
         </label>
         <div id="relief-image-name" class="import-status">Изображение не выбрано</div>
+        <label>Материал самого рельефа
+            <select id="relief-material">
+                <option value="white" selected>Белый матовый камень</option>
+                <option value="lightgray">Светло-серый матовый камень</option>
+                <option value="darkgray">Тёмно-серый матовый камень</option>
+            </select>
+        </label>
+        <label>Детализация сетки: <span class="val" id="relief-resolution-value">384</span>
+            <input type="range" id="relief-resolution" min="128" max="512" step="32" value="384">
+        </label>
         <label>Глубина рельефа: <span class="val" id="relief-depth-value">8</span> мм
             <input type="range" id="relief-depth" min="1" max="30" step="1" value="8">
         </label>
@@ -6539,13 +6549,32 @@ const reliefDepthInput = document.getElementById('relief-depth');
 const reliefSizeInput = document.getElementById('relief-size');
 const reliefBlurInput = document.getElementById('relief-blur');
 const reliefInvertInput = document.getElementById('relief-invert');
+const reliefMaterialInput = document.getElementById('relief-material');
+const reliefResolutionInput = document.getElementById('relief-resolution');
+
+const RELIEF_MATERIAL_COLORS = {
+    white: 0xf2f1ed,
+    lightgray: 0xbfc3c7,
+    darkgray: 0x777d83
+};
+
+function applyReliefMaterial() {
+    if (!imageReliefMesh) return;
+    const color = RELIEF_MATERIAL_COLORS[reliefMaterialInput.value] || RELIEF_MATERIAL_COLORS.white;
+    imageReliefMesh.material.color.setHex(color);
+    imageReliefMesh.material.roughness = 0.96;
+    imageReliefMesh.material.metalness = 0;
+    imageReliefMesh.material.needsUpdate = true;
+}
+reliefMaterialInput.addEventListener('change', applyReliefMaterial);
 
 function updateReliefControls() {
     document.getElementById('relief-depth-value').textContent = reliefDepthInput.value;
     document.getElementById('relief-size-value').textContent = reliefSizeInput.value;
     document.getElementById('relief-blur-value').textContent = reliefBlurInput.value;
+    document.getElementById('relief-resolution-value').textContent = reliefResolutionInput.value;
 }
-[reliefDepthInput, reliefSizeInput, reliefBlurInput].forEach(input =>
+[reliefDepthInput, reliefSizeInput, reliefBlurInput, reliefResolutionInput].forEach(input =>
     input.addEventListener('input', updateReliefControls)
 );
 updateReliefControls();
@@ -6589,7 +6618,7 @@ function removeImageRelief() {
     document.getElementById('relief-status').textContent = 'Рельеф удалён.';
 }
 
-function buildImageReliefGeometry(image, stoneBox, depthMeters, widthPercent, blur, invert) {
+function buildImageReliefGeometry(image, stoneBox, depthMeters, widthPercent, blur, invert, resolution) {
     const maxWidth = stoneBox.max.x - stoneBox.min.x;
     const maxHeight = stoneBox.max.y - stoneBox.min.y;
     if (!(maxWidth > 0 && maxHeight > 0)) throw new Error('Не удалось определить размеры лицевой поверхности стелы.');
@@ -6600,8 +6629,11 @@ function buildImageReliefGeometry(image, stoneBox, depthMeters, widthPercent, bl
     const height = width / aspect;
     if (!(width > 0 && height > 0)) throw new Error('Некорректные размеры изображения.');
 
-    const nx = Math.max(24, Math.min(180, Math.round(image.naturalWidth / 5)));
-    const ny = Math.max(24, Math.min(180, Math.round(nx / aspect)));
+    // Resolution is applied to the longest image edge, preserving its aspect ratio.
+    // A denser height field retains facial features and smaller carved details.
+    const longEdge = Math.max(128, Math.min(512, Math.round(resolution || 384)));
+    const nx = Math.max(64, Math.round(aspect >= 1 ? longEdge : longEdge * aspect));
+    const ny = Math.max(64, Math.round(aspect >= 1 ? longEdge / aspect : longEdge));
     const canvas = document.createElement('canvas');
     canvas.width = nx; canvas.height = ny;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -6673,13 +6705,17 @@ document.getElementById('btn-build-image-relief').addEventListener('click', () =
             reliefSourceImage, stellaMesh.geometry.boundingBox,
             Number(reliefDepthInput.value) / 1000,
             Number(reliefSizeInput.value), Number(reliefBlurInput.value),
-            reliefInvertInput.checked
+            reliefInvertInput.checked, Number(reliefResolutionInput.value)
         );
         removeImageRelief();
-        const sourceMaterial = Array.isArray(stellaMesh.material) ? stellaMesh.material[0] : stellaMesh.material;
-        const material = sourceMaterial && sourceMaterial.clone
-            ? sourceMaterial.clone()
-            : new THREE.MeshStandardMaterial({ color: 0x777777, roughness: 0.85 });
+        // The relief is a separately selectable matte carved-stone surface,
+        // not a copy of the monument's polished/granite material.
+        const material = new THREE.MeshStandardMaterial({
+            color: RELIEF_MATERIAL_COLORS[reliefMaterialInput.value] || RELIEF_MATERIAL_COLORS.white,
+            roughness: 0.96,
+            metalness: 0,
+            flatShading: false
+        });
         imageReliefMesh = new THREE.Mesh(geometry, material);
         imageReliefMesh.name = 'Рельеф по изображению: ' + reliefSourceName;
         imageReliefMesh.userData.isImageRelief = true;
