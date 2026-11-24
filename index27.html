@@ -3785,17 +3785,18 @@ function computeNormalCutZCenter() {
 }
 
 function computeFrameTopZ() {
-    // Для импортированной детали используем реальные мировые границы по Z.
+    // Центрируем фрезу так, чтобы её верх выступал над поверхностью на EPS_TOP,
+    // а нижняя граница точно соответствовала выбранной глубине inp-cd.
     const czo = readSlider('inp-czo', 0);
-    const depth = computeFrameExtrudeDepth();
+    const cutDepth = getCutDepthMeters();
     const bounds = getSelectedAssemblyZBounds();
     if (bounds) {
         return activeCutSide === 'front'
-            ? bounds.max - depth / 2 + EPS_TOP / 2 + czo / 100
-            : bounds.min + depth / 2 - EPS_TOP / 2 - czo / 100;
+            ? bounds.max - cutDepth / 2 + EPS_TOP / 2 + czo / 100
+            : bounds.min + cutDepth / 2 - EPS_TOP / 2 - czo / 100;
     }
     const half = getStellaHalfDepth();
-    const center = half - depth / 2 + EPS_TOP / 2 + czo / 100;
+    const center = half - cutDepth / 2 + EPS_TOP / 2 + czo / 100;
     return activeCutSide === 'front' ? center : -center;
 }
 
@@ -3807,10 +3808,12 @@ function updateCutZHint() {
     const hint = document.getElementById('cut-z-hint');
     if (!hint) return;
 
-    const cutDepth = getCutDepthMeters();
     const type = document.getElementById('sel-cut-type')?.value || 'normal';
     const sideLabel = activeCutSide === 'front' ? 'лицо' : 'оборот';
-    const half = getStellaHalfDepth();
+    const bounds = getSelectedAssemblyZBounds();
+    const stockMin = bounds ? bounds.min : -getStellaHalfDepth();
+    const stockMax = bounds ? bounds.max : getStellaHalfDepth();
+    const stockDepth = Math.max(0, stockMax - stockMin);
 
     let extrudeDepth, topZ;
     if (type === 'normal') {
@@ -3827,16 +3830,16 @@ function updateCutZHint() {
 
     const zMin = Math.min(topZ, topZ - extrudeDepth);
     const zMax = Math.max(topZ, topZ - extrudeDepth);
-    const ovMin = Math.max(zMin, -half);
-    const ovMax = Math.min(zMax, half);
+    const ovMin = Math.max(zMin, stockMin);
+    const ovMax = Math.min(zMax, stockMax);
     const depth = Math.max(0, ovMax - ovMin);
-    const fullDepthMm = (getStellaFullDepth() * 1000).toFixed(0);
+    const fullDepthMm = (stockDepth * 1000).toFixed(0);
 
     if (depth <= 0.0001) {
         hint.textContent = `⚠️ Вырез не задевает стелу (${sideLabel})`;
         hint.style.background = 'rgba(244,67,54,0.25)';
         hint.style.color = '#f44336';
-    } else if (type === 'normal' && depth >= getStellaFullDepth() - 0.0001) {
+    } else if (type === 'normal' && depth >= stockDepth - 0.0001) {
         hint.textContent = `🔴 СКВОЗНОЙ ВЫРЕЗ (${(depth * 1000).toFixed(0)} мм)`;
         hint.style.background = 'rgba(244,67,54,0.25)';
         hint.style.color = '#f44336';
@@ -4134,9 +4137,14 @@ function buildFrameFinishGeometry(mainDepth, pointsPx) {
 
 function computeFrameFinishZCenter(depth) {
     const czo = readSlider('inp-czo', 0);
-    const half = getStellaHalfDepth();
-    const center = half - depth / 2 + EPS_TOP / 2 + czo / 100;
-    return activeCutSide === 'front' ? center : -center;
+    const bounds = getSelectedAssemblyZBounds();
+    const surface = bounds
+        ? (activeCutSide === 'front' ? bounds.max : bounds.min)
+        : (activeCutSide === 'front' ? getStellaHalfDepth() : -getStellaHalfDepth());
+    const direction = activeCutSide === 'front' ? 1 : -1;
+    // finishDepth уже включает EPS_TOP; компенсируем его полностью,
+    // чтобы фактическая глубина чистового прохода равнялась заданной.
+    return surface - direction * depth / 2 + direction * EPS_TOP + direction * czo / 100;
 }
 
 function framePreviewRails(pointsPx) {
