@@ -5503,7 +5503,9 @@ function addImportedAssemblyModel(root, fileName) {
         if (!primaryBox.isEmpty() && !importedBox.isEmpty()) {
             const primaryCenterX = primaryBox.getCenter(new THREE.Vector3()).x;
             const importedCenter = importedBox.getCenter(new THREE.Vector3());
-            const deltaWorld = new THREE.Vector3(primaryCenterX - importedCenter.x, 0, 0);
+            // Технологическая поправка: импортированную стелу нужно сместить
+            // на +20 мм по X после совмещения центров.
+            const deltaWorld = new THREE.Vector3(primaryCenterX - importedCenter.x + 0.020, 0, 0);
             if (Math.abs(deltaWorld.x) > 1e-6 && root.parent) {
                 const parent = root.parent;
                 const currentCenterLocal = parent.worldToLocal(importedCenter.clone());
