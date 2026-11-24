@@ -3555,7 +3555,26 @@ document.getElementById('btn-text-side-back').addEventListener('click', () => {
    18. CUT Z + GEOMETRY
    ============================================================ */
 
-function mirrorX(v) { return activeCutSide === 'front' ? v : -v; }
+function getSelectedAssemblyCutBounds() {
+    if (!selectedAssemblyTarget) return null;
+    selectedAssemblyTarget.updateWorldMatrix(true, true);
+    const bounds = new THREE.Box3().setFromObject(selectedAssemblyTarget);
+    return bounds.isEmpty() ? null : bounds;
+}
+
+// Imported models use their own world-space footprint as the ornament origin.
+// X=0 is the model's bounding-box center; Y=0 is its lowest point.
+function cutModelX(v) {
+    const bounds = getSelectedAssemblyCutBounds();
+    const originX = bounds ? (bounds.min.x + bounds.max.x) / 2 : 0;
+    const mirrored = activeCutSide === 'front' ? v : -v;
+    return originX + mirrored;
+}
+function cutModelY(v) {
+    const bounds = getSelectedAssemblyCutBounds();
+    return (bounds ? bounds.min.y : 0) + v;
+}
+function mirrorX(v) { return cutModelX(v); }
 function mirrorRot(deg) { return activeCutSide === 'front' ? deg : -deg; }
 function cutterRotationY() { return activeCutSide === 'front' ? 0 : Math.PI; }
 
@@ -4166,13 +4185,13 @@ function generatePatternInstances(baseX, baseY, baseRot) {
             instances.push({ x: -baseX, y: baseY, rot: -baseRot });
             break;
         case 'mirror-y': {
-            const midY = params.height / 2;
+            const cutBounds = getSelectedAssemblyCutBounds();\n            const midY = cutBounds ? (cutBounds.min.y + cutBounds.max.y) / 2 : params.height / 2;
             instances.push({ x: baseX, y: baseY, rot: baseRot });
             instances.push({ x: baseX, y: 2 * midY - baseY, rot: -baseRot });
             break;
         }
         case 'mirror-xy': {
-            const midY2 = params.height / 2;
+            const cutBounds2 = getSelectedAssemblyCutBounds();\n            const midY2 = cutBounds2 ? (cutBounds2.min.y + cutBounds2.max.y) / 2 : params.height / 2;
             instances.push({ x: baseX, y: baseY, rot: baseRot });
             instances.push({ x: -baseX, y: baseY, rot: -baseRot });
             instances.push({ x: baseX, y: 2 * midY2 - baseY, rot: -baseRot });
@@ -4273,7 +4292,7 @@ function showContourIn3D() {
                 roughness: 0.7, metalness: 0, side: THREE.DoubleSide, depthWrite: false
             });
             const mainMesh = new THREE.Mesh(geo, mat);
-            mainMesh.position.set(mirrorX(cx), cy, positionZ);
+            mainMesh.position.set(mirrorX(cx), cutModelY(cy), positionZ);
             mainMesh.scale.set(cs, cs, 1);
             mainMesh.rotation.set(0, ry, mirrorRot(rot) * Math.PI / 180);
             const useFinish = type !== 'normal' && readCheck('chk-cut-bevel');
@@ -4281,7 +4300,7 @@ function showContourIn3D() {
                 const finish = buildFrameFinishGeometry(extrudeDepth, pts);
                 const finishMat = new THREE.MeshStandardMaterial({ color: 0xffa726, transparent: true, opacity: 0.48, roughness: 0.65, side: THREE.DoubleSide, depthWrite: false });
                 const finishMesh = new THREE.Mesh(finish.geometry, finishMat);
-                finishMesh.position.set(mirrorX(cx), cy, computeFrameFinishZCenter(finish.depth));
+                finishMesh.position.set(mirrorX(cx), cutModelY(cy), computeFrameFinishZCenter(finish.depth));
                 finishMesh.scale.set(cs, cs, 1);
                 finishMesh.rotation.copy(mainMesh.rotation);
                 const nextPreviewGroup = new THREE.Group();
@@ -4307,7 +4326,7 @@ function showContourIn3D() {
             const pos = new THREE.Vector3();
             const scl = new THREE.Vector3(cs, cs, 1);
             instances.forEach((inst, i) => {
-                pos.set(mirrorX(inst.x), inst.y, positionZ);
+                pos.set(mirrorX(inst.x), cutModelY(inst.y), positionZ);
                 q.setFromEuler(new THREE.Euler(0, ry, mirrorRot(inst.rot) * Math.PI / 180));
                 m4.compose(pos, q, scl);
                 instMesh.setMatrixAt(i, m4);
@@ -4321,7 +4340,7 @@ function showContourIn3D() {
                 const finishPos = new THREE.Vector3();
                 const finishScale = new THREE.Vector3(cs, cs, 1);
                 instances.forEach((inst, i) => {
-                    finishPos.set(mirrorX(inst.x), inst.y, computeFrameFinishZCenter(finish.depth));
+                    finishPos.set(mirrorX(inst.x), cutModelY(inst.y), computeFrameFinishZCenter(finish.depth));
                     q.setFromEuler(new THREE.Euler(0, ry, mirrorRot(inst.rot) * Math.PI / 180));
                     m4.compose(finishPos, q, finishScale);
                     finishInst.setMatrixAt(i, m4);
@@ -4382,7 +4401,7 @@ function showAllContoursIn3D() {
         try {
             const geo = buildBaseCutGeometry(extrudeDepth, outer, holes);
             const m = new THREE.Mesh(geo, mat);
-            m.position.set(mirrorX(cx), cy, positionZ);
+            m.position.set(mirrorX(cx), cutModelY(cy), positionZ);
             m.scale.set(cs, cs, 1);
             m.rotation.set(0, ry, mirrorRot(rot) * Math.PI / 180);
             grp.add(m);
@@ -4828,7 +4847,7 @@ document.getElementById('btn-cut').addEventListener('click', () => {
 
     const cutters = [createCutterBrush(
         cutGeo,
-        new THREE.Vector3(mirrorX(cx), cy, positionZ),
+        new THREE.Vector3(mirrorX(cx), cutModelY(cy), positionZ),
         new THREE.Vector3(cs, cs, 1),
         mirrorRot(rot) * Math.PI / 180,
         ry
@@ -4838,7 +4857,7 @@ document.getElementById('btn-cut').addEventListener('click', () => {
             const finish = buildFrameFinishGeometry(extrudeDepth, activePts);
             cutters.push(createCutterBrush(
                 finish.geometry,
-                new THREE.Vector3(mirrorX(cx), cy, computeFrameFinishZCenter(finish.depth)),
+                new THREE.Vector3(mirrorX(cx), cutModelY(cy), computeFrameFinishZCenter(finish.depth)),
                 new THREE.Vector3(cs, cs, 1),
                 mirrorRot(rot) * Math.PI / 180,
                 ry
@@ -4952,11 +4971,11 @@ document.getElementById('btn-apply-pattern').addEventListener('click', () => {
         }
     }
     instances.forEach(inst => {
-        const pos = new THREE.Vector3(mirrorX(inst.x), inst.y, positionZ);
+        const pos = new THREE.Vector3(mirrorX(inst.x), cutModelY(inst.y), positionZ);
         const rotZ = mirrorRot(inst.rot) * Math.PI / 180;
         cutters.push(createCutterBrush(baseGeo.clone(), pos, new THREE.Vector3(cs, cs, 1), rotZ, ry));
         if (finishBase) {
-            cutters.push(createCutterBrush(finishBase.clone(), new THREE.Vector3(mirrorX(inst.x), inst.y, computeFrameFinishZCenter(finishDepth)), new THREE.Vector3(cs, cs, 1), rotZ, ry));
+            cutters.push(createCutterBrush(finishBase.clone(), new THREE.Vector3(mirrorX(inst.x), cutModelY(inst.y), computeFrameFinishZCenter(finishDepth)), new THREE.Vector3(cs, cs, 1), rotZ, ry));
         }
     });
     baseGeo.dispose();
