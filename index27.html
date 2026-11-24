@@ -110,6 +110,16 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
     padding: 10px; border-radius: 5px; pointer-events: none; font-size: 11px;
     z-index: 5; line-height: 1.4; color: var(--info-text);
 }
+#workspace-alert {
+    position:absolute; left:12px; right:12px; bottom:12px; z-index:30;
+    display:none; padding:10px 14px; border-radius:7px; font-size:13px;
+    line-height:1.4; font-weight:600; box-shadow:0 3px 14px rgba(0,0,0,.3);
+    pointer-events:none; white-space:pre-wrap;
+}
+#workspace-alert.visible { display:block; }
+#workspace-alert.warning { background:#6b4b12; color:#fff3cd; border:1px solid #d6a43b; }
+#workspace-alert.error { background:#6b2020; color:#ffe2e2; border:1px solid #d9534f; }
+#workspace-alert.success { background:#174b2b; color:#e4ffec; border:1px solid #43a86a; }
 #draw-canvas, #profile-canvas {
     background-color: var(--canvas-bg); border: 2px dashed var(--canvas-border); border-radius: 4px;
     cursor: crosshair; display: block; margin-bottom: 8px; touch-action: none;
@@ -774,6 +784,7 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
         <span style="color:#4caf50">Зеленая сетка = уровень пола (Y=0)</span>
     </div>
     <div id="raycast-badge" class="raycast-badge">🎯 Рисование в 3D: клик по модели</div>
+    <div id="workspace-alert" role="status" aria-live="polite"></div>
 </div>
 
 <div id="loading-overlay">
@@ -802,7 +813,17 @@ function readCheck(id) {
 }
 
 function setStatus(msg) {
-    document.getElementById('status-bar').textContent = msg;
+    const text = String(msg ?? '');
+    const bar = document.getElementById('status-bar');
+    if (bar) bar.textContent = text;
+    const alert = document.getElementById('workspace-alert');
+    if (alert) {
+        const isError = /❌|ошибка|не удалось|не загрузил|отменена/i.test(text);
+        const isWarning = /⚠️|предупреждение|внимание|пересекает/i.test(text);
+        const isSuccess = /✅|выполнен|применён|добавлена/i.test(text);
+        alert.textContent = text;
+        alert.className = 'visible ' + (isError ? 'error' : isWarning ? 'warning' : isSuccess ? 'success' : 'warning');
+    }
 }
 
 function showLoading(show, text = 'Обработка...') {
@@ -3880,7 +3901,11 @@ function offsetClosedPathAligned(points, distance) {
         // a usable closed polygon instead of aborting the entire preview.
         const clipper = window.ClipperLib;
         if (!clipper || !clipper.ClipperOffset) {
-            throw new Error('Контур требует геометрической очистки, но модуль Clipper недоступен');
+            // CDN may be blocked/offline. Keep contour projection available using
+            // the native miter offset instead of aborting every preview.
+            if (result.every(p => Number.isFinite(p.x) && Number.isFinite(p.y)) &&
+                Math.abs(resultArea) > 1e-12) return result;
+            throw new Error('Не удалось безопасно сместить контур без Clipper. Проверьте ширину шва или загрузите модуль Clipper.');
         }
         const scale = 1000000;
         const integerPath = path.map(p => ({ X: Math.round(p.x * scale), Y: Math.round(p.y * scale) }));
@@ -3968,7 +3993,15 @@ function offsetClosedPath(points, distance) {
 
     const clipper = window.ClipperLib;
     if (!clipper || !clipper.ClipperOffset) {
-        throw new Error('Не загрузился модуль геометрического смещения Clipper');
+        // Offline fallback: preserve the contour and use the built-in miter
+        // offset. This is less robust for self-intersections, but it keeps
+        // ordinary seams and SVG previews usable when the CDN is unavailable.
+        const fallback = offsetClosedPathAligned(source, distance);
+        if (!Array.isArray(fallback) || fallback.length !== targetCount ||
+            fallback.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
+            throw new Error('Не удалось сместить контур без Clipper. Уменьшите ширину шва.');
+        }
+        return fallback;
     }
 
     const scale = 1000000; // микрометровая точность при координатах в метрах
