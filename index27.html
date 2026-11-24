@@ -1363,8 +1363,26 @@ function applyActiveTargetTransform(object, localPosition, localEuler) {
 }
 
 function createCutterBrush(geometry, position, scale, rotationZ, rotationY = 0, rotationX = 0) {
-    // Cutter has its own untextured material. CSG maps its generated faces
-    // to the dedicated cut-face slot on the target after evaluation.
+    // Keep the established primary-CAD path unchanged: contour cutters (heart,
+    // SVG and hand-drawn shapes) use the same three material slots and local
+    // coordinates as before the imported-STL CSG work.
+    const selectedItem = selectedAssemblyTarget
+        ? assemblyItems.find(item => item.root === selectedAssemblyTarget)
+        : null;
+    const isImportedTarget = !!selectedAssemblyTarget && !(selectedItem && selectedItem.isPrimary);
+
+    if (!isImportedTarget) {
+        geometry = normalizeForCSG(geometry, 2);
+        const brush = new Brush(geometry);
+        brush.material = getCSGMaterials();
+        brush.position.copy(position);
+        brush.scale.copy(scale);
+        brush.rotation.set(rotationX, rotationY, rotationZ);
+        brush.updateMatrixWorld(true);
+        return brush;
+    }
+
+    // Imported STL cutters are positioned in the selected model's world frame.
     geometry = normalizeForCSG(geometry, 0);
     const brush = new Brush(geometry);
     brush.material = [csgCutterMaterial];
