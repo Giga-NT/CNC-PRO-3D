@@ -1352,10 +1352,13 @@ function applyActiveTargetTransform(object, localPosition, localEuler) {
         return;
     }
     target.updateWorldMatrix(true, false);
+    const worldPosition = new THREE.Vector3();
     const worldQuaternion = new THREE.Quaternion();
-    target.matrixWorld.decompose(new THREE.Vector3(), worldQuaternion, new THREE.Vector3());
+    const worldScale = new THREE.Vector3();
+    target.matrixWorld.decompose(worldPosition, worldQuaternion, worldScale);
     object.position.copy(localPosition).applyMatrix4(target.matrixWorld);
     object.quaternion.copy(worldQuaternion).multiply(new THREE.Quaternion().setFromEuler(localEuler));
+    object.scale.multiply(worldScale);
     object.updateMatrixWorld(true);
 }
 
@@ -3232,7 +3235,7 @@ function extractSvgVectorContours(source, viewBox) {
     const contours = [];
     let sampled = 0;
     try {
-        const nodes = host.querySelectorAll('path,rect,circle,ellipse,polygon,polyline');
+        const nodes = host.querySelectorAll('path,line,rect,circle,ellipse,polygon,polyline');
         for (const node of nodes) {
             const style = getComputedStyle(node);
             if (style.display === 'none' || style.visibility === 'hidden' ||
@@ -5161,7 +5164,11 @@ function showPrimitivePreview() {
         roughness: 0.6, side: THREE.DoubleSide, depthWrite: false
     });
     primitivePreviewMesh = new THREE.Mesh(geo, mat);
-    primitivePreviewMesh.position.set(t.x, t.y, t.z);
+    applyActiveTargetTransform(
+        primitivePreviewMesh,
+        new THREE.Vector3(t.x, t.y, t.z),
+        new THREE.Euler(0, 0, 0)
+    );
     scene.add(primitivePreviewMesh);
     setStatus(`🧱 Превью: ${currentPrimitiveType} (Поворот: ${t.rotX}°, ${t.rotY}°, ${t.rotZ}°)`);
 }
@@ -5196,8 +5203,12 @@ function runPrimitiveCSG(operation, opName) {
 
     const brush = new Brush(geo);
     brush.material = [csgCutterMaterial];
-    brush.position.set(t.x, t.y, t.z);
-    brush.updateMatrixWorld(true);
+    brush.scale.set(1, 1, 1);
+    applyActiveTargetTransform(
+        brush,
+        new THREE.Vector3(t.x, t.y, t.z),
+        new THREE.Euler(0, 0, 0)
+    );
 
     clearPrimitivePreview();
 
