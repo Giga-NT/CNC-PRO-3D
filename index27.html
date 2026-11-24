@@ -3894,151 +3894,18 @@ function cleanClosedPath(points, tolerance = 0.0005) {
 // Смещение с сохранением соответствия вершин исходного контура.
 // Каждая выходная точка строится на пересечении смещённых соседних рёбер;
 // никакого независимого пересэмплирования левой и правой стенок.
-function offsetClosedPathAligned(points, distance) {
-    const path = cleanClosedPath(points, 1e-8);
-    if (!Number.isFinite(distance)) throw new Error('Некорректное расстояние смещения контура');
-    if (Math.abs(distance) < 1e-12) return path.map(p => ({ x:p.x, y:p.y }));
-    const area = contourSignedArea(path);
-    if (Math.abs(area) < 1e-12) throw new Error('Нельзя сместить контур с нулевой площадью');
-    const n = path.length;
-    const result = [];
-    for (let i = 0; i < n; i++) {
-        const prev = path[(i + n - 1) % n], cur = path[i], next = path[(i + 1) % n];
-        const ax = cur.x - prev.x, ay = cur.y - prev.y;
-        const bx = next.x - cur.x, by = next.y - cur.y;
-        const al = Math.hypot(ax, ay), bl = Math.hypot(bx, by);
-        if (al < 1e-10 || bl < 1e-10) throw new Error('В контуре обнаружено слишком короткое ребро');
-        const an = { x:-ay/al, y:ax/al }, bn = { x:-by/bl, y:bx/bl };
-        const dot = Math.max(-1, Math.min(1, (ax*bx + ay*by)/(al*bl)));
-        const denom = 1 + dot;
-        let mx = 0, my = 0;
-        if (denom < 1e-7) {
-            // Почти развёрнутый угол: используем безопасную биссектрису,
-            // чтобы не создавать бесконечный выступ на самопересечении.
-            mx = an.x;
-            my = an.y;
-        } else {
-            mx = (an.x + bn.x) / denom;
-            my = (an.y + bn.y) / denom;
-        }
-
-        const miter = Math.hypot(mx, my);
-        if (!Number.isFinite(miter) || miter > 50) {
-            throw new Error('Слишком острый угол контура: смещение создаёт недопустимо длинный выступ');
-        }
-        result.push({ x:cur.x + mx*distance, y:cur.y + my*distance });
-    }
-    if (result.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
-        throw new Error('Смещение породило некорректные координаты');
-    }
-    const resultArea = contourSignedArea(result);
-    if (Math.abs(resultArea) < 1e-12 || Math.sign(resultArea) !== Math.sign(area)) {
-        // Acute concave corners can make a raw miter offset self-intersect.
-        // Retry through Clipper, which resolves intersections before returning
-        // a usable closed polygon instead of aborting the entire preview.
-        const clipper = window.ClipperLib;
-        if (!clipper || !clipper.ClipperOffset) {
-            // CDN may be blocked/offline. Keep contour projection available using
-            // the native miter offset instead of aborting every preview.
-            if (result.every(p => Number.isFinite(p.x) && Number.isFinite(p.y)) &&
-                Math.abs(resultArea) > 1e-12) return result;
-            throw new Error('Не удалось безопасно сместить контур без Clipper. Проверьте ширину шва или загрузите модуль Clipper.');
-        }
-        const scale = 1000000;
-        const integerPath = path.map(p => ({ X: Math.round(p.x * scale), Y: Math.round(p.y * scale) }));
-        const offset = new clipper.ClipperOffset(2.0, 0.25);
-        offset.MiterLimit = 10;
-        offset.AddPath(integerPath, clipper.JoinType.jtMiter, clipper.EndType.etClosedPolygon);
-        const solution = new clipper.Paths();
-        offset.Execute(solution, -distance * Math.sign(area) * scale);
-        const candidates = solution
-            .filter(candidate => candidate.length >= 3 && Math.abs(clipper.Clipper.Area(candidate)) >= 1)
-            .sort((a, b) => Math.abs(clipper.Clipper.Area(b)) - Math.abs(clipper.Clipper.Area(a)));
-        if (!candidates.length) throw new Error('Ширина шва превышает локальную толщину контура');
-        const best = candidates[0].map(p => ({ x: p.X / scale, y: p.Y / scale }));
-        return resampleClosedPath(best, path.length, path);
-    }
-    return result;
-}
-
-function resampleClosedPath(points, count, referencePath = points) {
-    if (!Array.isArray(points) || points.length < 3 || count < 3) {
-        throw new Error('Недостаточно точек для построения смещённого контура');
-    }
-
-    // Пересэмплирование по длине дуги сохраняет порядок обхода и равномерно
-    // распределяет вершины. Удаление "наименее выраженных" точек ломало
-    // соответствие сегментов на звёздах и сложных SVG.
-    const referenceArea = contourSignedArea(referencePath);
-    let path = points.map(p => ({ x: p.x, y: p.y }));
-    if (Math.sign(contourSignedArea(path)) !== Math.sign(referenceArea)) path.reverse();
-
-    // Фиксируем фазу контура проекцией исходной стартовой точки
-    // на ближайший сегмент смещённого пути. Привязка к ближайшей ВЕРШИНЕ
-    // вызывала скачки шва при малых изменениях формы/ширины.
-    const anchor = referencePath[0];
-    if (!anchor || !Number.isFinite(anchor.x) || !Number.isFinite(anchor.y)) throw new Error('Исходная точка привязки контура некорректна');
-    let first = 0, best = Infinity, bestT = 0, bestPoint = null;
-    for (let i = 0; i < path.length; i++) {
-        const a = path[i], b = path[(i + 1) % path.length];
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const len2 = dx * dx + dy * dy;
-        const t = len2 > 1e-20
-            ? Math.max(0, Math.min(1, ((anchor.x - a.x) * dx + (anchor.y - a.y) * dy) / len2))
-            : 0;
-        const q = { x: a.x + dx * t, y: a.y + dy * t };
-        const d2 = (q.x - anchor.x) ** 2 + (q.y - anchor.y) ** 2;
-        if (d2 < best) { best = d2; first = i; bestT = t; bestPoint = q; }
-    }
-    if (!bestPoint || !Number.isFinite(bestPoint.x) || !Number.isFinite(bestPoint.y)) throw new Error('Не удалось определить стабильную точку начала смещённого контура');
-    const ordered = [bestPoint];
-    for (let k = 1; k <= path.length; k++) ordered.push(path[(first + k) % path.length]);
-    path = ordered;
-
-    const lengths = path.map((p, i) => {
-        const q = path[(i + 1) % path.length];
-        return Math.hypot(q.x - p.x, q.y - p.y);
-    });
-    const perimeter = lengths.reduce((a, b) => a + b, 0);
-    if (!(perimeter > 1e-10)) throw new Error('Периметр смещённого контура слишком мал');
-
-    const result = [];
-    let edge = 0, edgeStart = 0;
-    for (let i = 0; i < count; i++) {
-        const target = perimeter * i / count;
-        while (edge < lengths.length - 1 && edgeStart + lengths[edge] < target) {
-            edgeStart += lengths[edge++];
-        }
-        const len = lengths[edge];
-        const t = len > 1e-12 ? Math.max(0, Math.min(1, (target - edgeStart) / len)) : 0;
-        const a = path[edge], b = path[(edge + 1) % path.length];
-        result.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
-    }
-    if (result.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) throw new Error('Пересэмплирование создало некорректные координаты');
-    return result;
-}
-
 function offsetClosedPath(points, distance) {
     // ClipperOffset корректно обрабатывает вогнутые углы и очищает
     // самопересечения, возникающие при смещении сложных замкнутых контуров.
     // Не схлопываем повторно интерполированные точки: все уровни канавки
     // обязаны сохранить исходное число вершин, иначе индексы стенок разойдутся.
     const targetCount = Array.isArray(points) ? points.length : 0;
-    const source = cleanClosedPath(points, 1e-12);
-    if (source.length < 3) throw new Error('Для смещения нужно минимум 3 различные точки');
-    if (Math.abs(distance) < 1e-10) return source.map(p => ({ x:p.x, y:p.y }));
+    const source = cleanClosedPath(points, 1e-8);
+    if (Math.abs(distance) < 1e-10) return resampleClosedPath(source, targetCount, source);
 
     const clipper = window.ClipperLib;
     if (!clipper || !clipper.ClipperOffset) {
-        // Offline fallback: preserve the contour and use the built-in miter
-        // offset. This is less robust for self-intersections, but it keeps
-        // ordinary seams and SVG previews usable when the CDN is unavailable.
-        const fallback = offsetClosedPathAligned(source, distance);
-        if (!Array.isArray(fallback) || fallback.length !== targetCount ||
-            fallback.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
-            throw new Error('Не удалось сместить контур без Clipper. Уменьшите ширину шва.');
-        }
-        return fallback;
+        throw new Error('Не загрузился модуль геометрического смещения Clipper');
     }
 
     const scale = 1000000; // микрометровая точность при координатах в метрах
@@ -4046,13 +3913,8 @@ function offsetClosedPath(points, distance) {
     const area = contourSignedArea(source);
     if (Math.abs(area) < 1e-10) throw new Error('Площадь контура слишком мала для смещения');
 
-    // Для полигональных контуров используем miter-соединения:
-    // они сохраняют острые вершины звёзд и прямые рёбра вместо скругления.
-    // На плотно дискретизированных кривых малый угол между сегментами
-    // даёт практически гладкое смещение.
     const offset = new clipper.ClipperOffset(2.0, 0.25);
-    offset.MiterLimit = 50;
-    offset.AddPath(path, clipper.JoinType.jtMiter, clipper.EndType.etClosedPolygon);
+    offset.AddPath(path, clipper.JoinType.jtRound, clipper.EndType.etClosedPolygon);
 
     const runOffset = delta => {
         const solution = new clipper.Paths();
@@ -4073,10 +3935,10 @@ function offsetClosedPath(points, distance) {
                 if (candidateArea > bestArea) { best = candidate; bestArea = candidateArea; }
             }
         }
-        // Tight concavities can split an inward offset into several islands.
-        // The groove generator currently builds one continuous wall pair, so
-        // retain the dominant valid island instead of aborting all preview/CNC.
-        // Smaller detached remnants are below the tool's continuous path.
+        if (validCount > 1) {
+            throw new Error('Смещение разделило контур на ' + validCount +
+                ' отдельных частей. Уменьшите ширину шва или измените положение траектории.');
+        }
         return best;
     };
 
@@ -4100,38 +3962,7 @@ function offsetClosedPath(points, distance) {
         );
     }
 
-    // Если Clipper сохранил количество вершин, сохраняем каждую вершину
-    // исходного многоугольника. Это критично для звёзд и других ломаных:
-    // равномерное пересэмплирование срезало бы вершины и превращало рёбра в дуги.
-    if (source.length === targetCount && selected.length === source.length) {
-        try {
-            const reference = offsetClosedPathAligned(source, distance);
-            let bestShift = 0, bestReverse = false, bestScore = Infinity;
-            for (const reverse of [false, true]) {
-                for (let shift = 0; shift < selected.length; shift++) {
-                    let score = 0;
-                    for (let i = 0; i < reference.length; i++) {
-                        const index = reverse ? (shift - i + selected.length * 2) % selected.length : (i + shift) % selected.length;
-                        const p = selected[index], q = reference[i];
-                        const dx = p.X / scale - q.x, dy = p.Y / scale - q.y;
-                        score += dx * dx + dy * dy;
-                    }
-                    if (score < bestScore) { bestScore = score; bestShift = shift; bestReverse = reverse; }
-                }
-            }
-            return Array.from({ length: targetCount }, (_, i) => {
-                const index = bestReverse ? (bestShift - i + selected.length * 2) % selected.length : (i + bestShift) % selected.length;
-                const p = selected[index];
-                return { x: p.X / scale, y: p.Y / scale };
-            });
-        } catch (alignmentError) {
-            // Если исходная геометрия вырожденная для miter-сопоставления,
-            // оставляем резервное смещение Clipper с пересэмплированием.
-        }
-    }
-
-    // Для контуров, где Clipper изменил топологию/число вершин (например,
-    // сложные SVG), оставляем безопасный путь с пересэмплированием.
+    // Все уровни 3D-канавки должны иметь одинаковое число точек.
     const aligned = resampleClosedPath(output, targetCount, source);
     if (aligned.length !== targetCount) {
         throw new Error('Смещение изменило число вершин траектории: ожидалось ' + targetCount + ', получено ' + aligned.length);
@@ -4148,7 +3979,7 @@ function frameCenterlineMeters(pointsPx, widthM, gapM, side) {
     if (side === 'contour') return path;
     const inward = Math.sign(area);
     const shift = side === 'outside' ? -(gapM + widthM / 2) : widthM / 2;
-    return offsetClosedPathAligned(path, inward * shift); // Сохраняем исходную фазу и соответствие вершин
+    return offsetClosedPath(path, inward * shift);
 }
 
 function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
@@ -4184,8 +4015,8 @@ function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
         // Стенки канавки строим прямым miter-смещением на точное
         // заданное расстояние. Clipper + последующее пересэмплирование
         // меняли расстояние между стенками и визуальную ширину шва.
-        const leftLevel = offsetClosedPathAligned(center, halfWidth);
-        const rightLevel = offsetClosedPathAligned(center, -halfWidth);
+        const leftLevel = offsetClosedPath(center, halfWidth);
+        const rightLevel = offsetClosedPath(center, -halfWidth);
         if (leftLevel.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y)) || rightLevel.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
             throw new Error('Смещение стенок шва создало NaN/Infinity на уровне ' + k + '. Проверьте масштаб и ширину шва.');
         }
@@ -4272,8 +4103,8 @@ function framePreviewRails(pointsPx) {
     const side = document.getElementById('sel-frame-side')?.value || 'inside';
     const center = frameCenterlineMeters(pointsPx, widthM, gapM, side);
     // Preview rails must use the same exact offsets as the cutter walls.
-    const a = offsetClosedPathAligned(center, widthM / 2);
-    const b = offsetClosedPathAligned(center, -widthM / 2);
+    const a = offsetClosedPath(center, widthM / 2);
+    const b = offsetClosedPath(center, -widthM / 2);
     const toPx = p => ({ x:p.x*200 + drawCanvas.width/2, y:drawCanvas.height/2 - p.y*200 });
     return { a:a.map(toPx), b:b.map(toPx) };
 }
