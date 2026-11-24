@@ -4185,13 +4185,15 @@ function generatePatternInstances(baseX, baseY, baseRot) {
             instances.push({ x: -baseX, y: baseY, rot: -baseRot });
             break;
         case 'mirror-y': {
-            const cutBounds = getSelectedAssemblyCutBounds();\n            const midY = cutBounds ? (cutBounds.min.y + cutBounds.max.y) / 2 : params.height / 2;
+            const cutBounds = getSelectedAssemblyCutBounds();
+            const midY = cutBounds ? (cutBounds.min.y + cutBounds.max.y) / 2 : params.height / 2;
             instances.push({ x: baseX, y: baseY, rot: baseRot });
             instances.push({ x: baseX, y: 2 * midY - baseY, rot: -baseRot });
             break;
         }
         case 'mirror-xy': {
-            const cutBounds2 = getSelectedAssemblyCutBounds();\n            const midY2 = cutBounds2 ? (cutBounds2.min.y + cutBounds2.max.y) / 2 : params.height / 2;
+            const cutBounds2 = getSelectedAssemblyCutBounds();
+            const midY2 = cutBounds2 ? (cutBounds2.min.y + cutBounds2.max.y) / 2 : params.height / 2;
             instances.push({ x: baseX, y: baseY, rot: baseRot });
             instances.push({ x: -baseX, y: baseY, rot: -baseRot });
             instances.push({ x: baseX, y: 2 * midY2 - baseY, rot: -baseRot });
