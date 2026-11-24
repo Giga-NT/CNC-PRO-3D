@@ -461,6 +461,32 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
         </div>
     </div>
 
+    <div class="control-group" id="image-relief-module">
+        <h3>🗿 Рельеф по изображению</h3>
+        <div class="draw-instructions">Загрузи рисунок или фотографию. Программа построит настоящую объёмную геометрию рельефа на лицевой стороне стелы — это не текстура.</div>
+        <label style="display:block;margin:7px 0;">Изображение (PNG, JPG, WebP)
+            <input type="file" id="relief-image-file" accept="image/png,image/jpeg,image/webp" style="width:100%;margin-top:5px;">
+        </label>
+        <div id="relief-image-name" class="import-status">Изображение не выбрано</div>
+        <label>Глубина рельефа: <span class="val" id="relief-depth-value">8</span> мм
+            <input type="range" id="relief-depth" min="1" max="30" step="1" value="8">
+        </label>
+        <label>Ширина рисунка: <span class="val" id="relief-size-value">75</span>%
+            <input type="range" id="relief-size" min="20" max="100" step="1" value="75">
+        </label>
+        <label>Сглаживание: <span class="val" id="relief-blur-value">0</span>
+            <input type="range" id="relief-blur" min="0" max="5" step="0.5" value="0">
+        </label>
+        <div class="checkbox-row">
+            <label><input type="checkbox" id="relief-invert"> Инвертировать рельеф</label>
+        </div>
+        <div class="btn-row" style="margin-top:8px;">
+            <button id="btn-build-image-relief" class="primary" disabled>🗿 Создать рельеф</button>
+            <button id="btn-remove-image-relief" class="danger" disabled>Удалить рельеф</button>
+        </div>
+        <div id="relief-status" class="import-status">Сначала выбери изображение и создай стелу.</div>
+    </div>
+
     <div class="control-group">
         <h3>✏️ Контур выреза (2D)</h3>
 
@@ -5809,7 +5835,13 @@ function importSTL(file) {
     reader.readAsArrayBuffer(file);
 }
 function getAssemblyExportTarget() {
-    return assemblyItems.length ? assemblyRoot : (importedGroup || stellaMesh);
+    // Копия общей сборки для экспорта: стела с дочерним рельефом + импортированные модели.
+    const exportRoot = new THREE.Group();
+    exportRoot.name = 'CNC PRO 3D — export';
+    if (stellaMesh) exportRoot.add(stellaMesh.clone(true));
+    assemblyRoot.children.forEach(child => exportRoot.add(child.clone(true)));
+    if (!stellaMesh && !assemblyRoot.children.length && importedGroup) exportRoot.add(importedGroup.clone(true));
+    return exportRoot.children.length ? exportRoot : null;
 }
 
 document.getElementById('btn-export-stl').addEventListener('click', () => {
@@ -6494,6 +6526,178 @@ document.addEventListener('keydown', e => {
         }
     }
 });
+
+/* ============================================================
+   IMAGE RELIEF MODULE — image to real 3D height-field geometry
+   ============================================================ */
+let reliefSourceImage = null;
+let reliefSourceName = '';
+let imageReliefMesh = null;
+
+const reliefFileInput = document.getElementById('relief-image-file');
+const reliefDepthInput = document.getElementById('relief-depth');
+const reliefSizeInput = document.getElementById('relief-size');
+const reliefBlurInput = document.getElementById('relief-blur');
+const reliefInvertInput = document.getElementById('relief-invert');
+
+function updateReliefControls() {
+    document.getElementById('relief-depth-value').textContent = reliefDepthInput.value;
+    document.getElementById('relief-size-value').textContent = reliefSizeInput.value;
+    document.getElementById('relief-blur-value').textContent = reliefBlurInput.value;
+}
+[reliefDepthInput, reliefSizeInput, reliefBlurInput].forEach(input =>
+    input.addEventListener('input', updateReliefControls)
+);
+updateReliefControls();
+
+reliefFileInput.addEventListener('change', event => {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    if (!/^image\/(png|jpeg|webp)$/.test(file.type)) {
+        document.getElementById('relief-status').textContent = 'Формат не поддерживается. Выбери PNG, JPG или WebP.';
+        event.target.value = '';
+        return;
+    }
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+        if (reliefSourceImage && reliefSourceImage.__objectUrl) URL.revokeObjectURL(reliefSourceImage.__objectUrl);
+        image.__objectUrl = url;
+        reliefSourceImage = image;
+        reliefSourceName = file.name;
+        document.getElementById('relief-image-name').textContent =
+            file.name + ' · ' + image.naturalWidth + ' × ' + image.naturalHeight;
+        document.getElementById('btn-build-image-relief').disabled = !stellaMesh;
+        document.getElementById('relief-status').textContent =
+            stellaMesh ? 'Изображение загружено. Настрой глубину и создай рельеф.' : 'Изображение загружено. Сначала создай стелу.';
+    };
+    image.onerror = () => {
+        URL.revokeObjectURL(url);
+        document.getElementById('relief-status').textContent = 'Не удалось прочитать изображение.';
+    };
+    image.src = url;
+});
+
+function removeImageRelief() {
+    if (!imageReliefMesh) return;
+    if (imageReliefMesh.parent) imageReliefMesh.parent.remove(imageReliefMesh);
+    if (imageReliefMesh.geometry) imageReliefMesh.geometry.dispose();
+    if (Array.isArray(imageReliefMesh.material)) imageReliefMesh.material.forEach(m => m.dispose());
+    else if (imageReliefMesh.material) imageReliefMesh.material.dispose();
+    imageReliefMesh = null;
+    document.getElementById('btn-remove-image-relief').disabled = true;
+    document.getElementById('relief-status').textContent = 'Рельеф удалён.';
+}
+
+function buildImageReliefGeometry(image, stoneBox, depthMeters, widthPercent, blur, invert) {
+    const maxWidth = stoneBox.max.x - stoneBox.min.x;
+    const maxHeight = stoneBox.max.y - stoneBox.min.y;
+    if (!(maxWidth > 0 && maxHeight > 0)) throw new Error('Не удалось определить размеры лицевой поверхности стелы.');
+    const aspect = image.naturalWidth / image.naturalHeight;
+    const fitWidth = maxWidth * widthPercent / 100;
+    const fitHeight = maxHeight * 0.68;
+    const width = Math.min(fitWidth, fitHeight * aspect);
+    const height = width / aspect;
+    if (!(width > 0 && height > 0)) throw new Error('Некорректные размеры изображения.');
+
+    const nx = Math.max(24, Math.min(180, Math.round(image.naturalWidth / 5)));
+    const ny = Math.max(24, Math.min(180, Math.round(nx / aspect)));
+    const canvas = document.createElement('canvas');
+    canvas.width = nx; canvas.height = ny;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.clearRect(0, 0, nx, ny);
+    ctx.filter = blur > 0 ? 'blur(' + blur + 'px)' : 'none';
+    ctx.drawImage(image, 0, 0, nx, ny);
+    ctx.filter = 'none';
+    const pixels = ctx.getImageData(0, 0, nx, ny).data;
+    const x0 = (stoneBox.min.x + stoneBox.max.x - width) / 2;
+    const y0 = (stoneBox.min.y + stoneBox.max.y - height) / 2;
+    const baseZ = stoneBox.max.z + 0.0005;
+    const top = new Array((nx + 1) * (ny + 1));
+    const positions = [];
+
+    for (let row = 0; row <= ny; row++) {
+        for (let col = 0; col <= nx; col++) {
+            const sx = Math.min(nx - 1, col), sy = Math.min(ny - 1, row);
+            const p = (sy * nx + sx) * 4;
+            const alpha = pixels[p + 3] / 255;
+            const gray = (0.2126 * pixels[p] + 0.7152 * pixels[p + 1] + 0.0722 * pixels[p + 2]) / 255;
+            const level = (invert ? 1 - gray : gray) * alpha;
+            top[row * (nx + 1) + col] = [
+                x0 + width * col / nx,
+                y0 + height * (1 - row / ny),
+                baseZ + Math.max(0, level) * depthMeters
+            ];
+        }
+    }
+    const tri = (a, b, c) => positions.push(...a, ...b, ...c);
+    for (let row = 0; row < ny; row++) {
+        for (let col = 0; col < nx; col++) {
+            const a = top[row * (nx + 1) + col];
+            const b = top[row * (nx + 1) + col + 1];
+            const c = top[(row + 1) * (nx + 1) + col + 1];
+            const d = top[(row + 1) * (nx + 1) + col];
+            tri(a, d, b); tri(b, d, c);
+        }
+    }
+    const bottomZ = baseZ - 0.0005;
+    const bl = [x0, y0, bottomZ], br = [x0 + width, y0, bottomZ];
+    const tr = [x0 + width, y0 + height, bottomZ], tl = [x0, y0 + height, bottomZ];
+    tri(bl, br, tr); tri(bl, tr, tl);
+    const addWall = (p1, p2) => {
+        const q1 = [p1[0], p1[1], bottomZ], q2 = [p2[0], p2[1], bottomZ];
+        tri(p1, q1, p2); tri(p2, q1, q2);
+    };
+    for (let col = 0; col < nx; col++) {
+        addWall(top[col], top[col + 1]);
+        addWall(top[ny * (nx + 1) + col + 1], top[ny * (nx + 1) + col]);
+    }
+    for (let row = 0; row < ny; row++) {
+        addWall(top[(row + 1) * (nx + 1)], top[row * (nx + 1)]);
+        addWall(top[row * (nx + 1) + nx], top[(row + 1) * (nx + 1) + nx]);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    return geometry;
+}
+
+document.getElementById('btn-build-image-relief').addEventListener('click', () => {
+    if (!stellaMesh) return document.getElementById('relief-status').textContent = 'Сначала создай стелу.';
+    if (!reliefSourceImage) return document.getElementById('relief-status').textContent = 'Сначала выбери изображение.';
+    try {
+        stellaMesh.geometry.computeBoundingBox();
+        const geometry = buildImageReliefGeometry(
+            reliefSourceImage, stellaMesh.geometry.boundingBox,
+            Number(reliefDepthInput.value) / 1000,
+            Number(reliefSizeInput.value), Number(reliefBlurInput.value),
+            reliefInvertInput.checked
+        );
+        removeImageRelief();
+        const sourceMaterial = Array.isArray(stellaMesh.material) ? stellaMesh.material[0] : stellaMesh.material;
+        const material = sourceMaterial && sourceMaterial.clone
+            ? sourceMaterial.clone()
+            : new THREE.MeshStandardMaterial({ color: 0x777777, roughness: 0.85 });
+        imageReliefMesh = new THREE.Mesh(geometry, material);
+        imageReliefMesh.name = 'Рельеф по изображению: ' + reliefSourceName;
+        imageReliefMesh.userData.isImageRelief = true;
+        imageReliefMesh.castShadow = true;
+        imageReliefMesh.receiveShadow = true;
+        stellaMesh.add(imageReliefMesh);
+        document.getElementById('btn-remove-image-relief').disabled = false;
+        document.getElementById('relief-status').textContent =
+            'Создана 3D-геометрия: ' + geometry.getAttribute('position').count.toLocaleString('ru-RU') + ' вершин. Рельеф включён в STL/GLB экспорт стелы.';
+        setStatus('Создан 3D-рельеф по изображению.');
+    } catch (error) {
+        log('Рельеф по изображению: ' + error.message);
+        document.getElementById('relief-status').textContent = 'Ошибка построения: ' + error.message;
+    }
+});
+document.getElementById('btn-remove-image-relief').addEventListener('click', removeImageRelief);
+
+/* END IMAGE RELIEF MODULE */
 
 /* ============================================================
    34. MOBILE MENU
