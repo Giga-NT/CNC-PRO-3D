@@ -632,7 +632,10 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
             </select>
 
             <label>Ширина шва: <span class="val" id="val-cut-width">30.0</span> мм</label>
-            <input type="range" id="inp-cut-width" min="0.2" max="100" step="0.1" value="30">
+            <div style="display:flex; align-items:center; gap:8px;">
+                <input type="range" id="inp-cut-width" min="0.2" max="100" step="0.1" value="30" style="flex:1;">
+                <input type="number" id="inp-cut-width-value" min="0.2" max="100" step="0.1" value="30" aria-label="Точная ширина шва в миллиметрах" style="width:82px; box-sizing:border-box;">
+            </div>
 
             <div id="outer-frame-options" style="display:none;">
                 <label>Зазор от фигуры: <span class="val" id="val-frame-gap">5.0</span> мм</label>
@@ -3919,15 +3922,14 @@ function offsetClosedPathAligned(points, distance) {
             my = (an.y + bn.y) / denom;
         }
 
-        // Ограничиваем длину miter на острых углах. Ранее весь preview
-        // падал при miter > 50; теперь угол локально срезается до лимита.
+        // Не обрезаем miter на обычных острых углах: такое ограничение
+        // уменьшало фактическую ширину U/V-канавки на острых вершинах
+        // (например, у звезды). Большие значения оставляем только как защиту
+        // от вырожденных почти параллельных рёбер.
         const miter = Math.hypot(mx, my);
-        const maxMiter = 10;
-        if (!Number.isFinite(miter)) throw new Error('Не удалось вычислить направление смещения контура');
-        if (miter > maxMiter) {
-            const factor = maxMiter / miter;
-            mx *= factor;
-            my *= factor;
+        const maxMiter = 1000;
+        if (!Number.isFinite(miter) || miter > maxMiter) {
+            throw new Error('Слишком острый угол контура для точного смещения. Добавьте точки или скруглите вершину.');
         }
         result.push({ x:cur.x + mx*distance, y:cur.y + my*distance });
     }
@@ -4626,14 +4628,39 @@ document.getElementById('btn-draw-finish-all').addEventListener('click', () => {
     if (!el) return;
     el.addEventListener('input', () => {
         const v = document.getElementById(id.replace('inp-', 'val-'));
-        if (v) {
-            if (id === 'inp-cut-bevel' || id === 'inp-cut-width' || id === 'inp-frame-gap') v.textContent = Number(el.value).toFixed(1);
-            else v.textContent = Number(el.value).toFixed(3);
+        if (v) v.textContent = Number(el.value).toFixed(1);
+        if (id === 'inp-cut-width') {
+            const exact = document.getElementById('inp-cut-width-value');
+            if (exact) exact.value = Number(el.value).toFixed(1);
         }
         redrawDrawCanvas();
         if (drawPoints.length >= 3 && (cutPreviewMesh || cutPreviewGroup)) schedulePreview();
     });
 });
+
+const cutWidthSlider = document.getElementById('inp-cut-width');
+const cutWidthExact = document.getElementById('inp-cut-width-value');
+if (cutWidthSlider && cutWidthExact) {
+    const syncExactWidth = () => {
+        if (cutWidthExact.value === '') return;
+        const value = Number(cutWidthExact.value);
+        if (!Number.isFinite(value)) return;
+        const clamped = Math.max(0.2, Math.min(100, value));
+        cutWidthSlider.value = String(clamped);
+        cutWidthExact.value = clamped.toFixed(1);
+        const label = document.getElementById('val-cut-width');
+        if (label) label.textContent = clamped.toFixed(1);
+        redrawDrawCanvas();
+        if (drawPoints.length >= 3 && (cutPreviewMesh || cutPreviewGroup)) schedulePreview();
+    };
+    cutWidthExact.addEventListener('change', syncExactWidth);
+    cutWidthExact.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+            syncExactWidth();
+            cutWidthExact.blur();
+        }
+    });
+}
 
 ['sel-cut-type', 'sel-frame-side', 'sel-cut-profile', 'sel-frame-finish-profile', 'chk-cut-bevel'].forEach(id => {
     const el = document.getElementById(id);
