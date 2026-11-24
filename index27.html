@@ -1351,15 +1351,18 @@ function applyActiveTargetTransform(object, localPosition, localEuler) {
         object.updateMatrixWorld(true);
         return;
     }
-    target.updateWorldMatrix(true, false);
-    const worldPosition = new THREE.Vector3();
-    const worldQuaternion = new THREE.Quaternion();
-    const worldScale = new THREE.Vector3();
-    target.matrixWorld.decompose(worldPosition, worldQuaternion, worldScale);
-    object.position.copy(localPosition).applyMatrix4(target.matrixWorld);
-    object.quaternion.copy(worldQuaternion).multiply(new THREE.Quaternion().setFromEuler(localEuler));
-    object.scale.multiply(worldScale);
-    object.updateMatrixWorld(true);
+    // Preserve the complete parent transform (including nested/non-uniform
+    // scales) instead of decomposing matrixWorld into position/quaternion/scale.
+    target.updateWorldMatrix(true, true);
+    const local = new THREE.Matrix4().compose(
+        localPosition,
+        new THREE.Quaternion().setFromEuler(localEuler),
+        object.scale.clone()
+    );
+    object.matrixAutoUpdate = false;
+    object.matrix.copy(target.matrixWorld).multiply(local);
+    object.matrixWorld.copy(object.matrix);
+    object.matrixWorldNeedsUpdate = false;
 }
 
 function createCutterBrush(geometry, position, scale, rotationZ, rotationY = 0, rotationX = 0) {
@@ -4753,11 +4756,16 @@ function getAssemblyCSGMaterials(mesh) {
 
 function createAssemblyTargetBrush(mesh, csgMaterials = getAssemblyCSGMaterials(mesh)) {
     mesh.updateWorldMatrix(true, false);
+    // Bake the exact world matrix into a cloned geometry. This avoids matrix
+    // decomposition drift for nested imported models and keeps the CSG result
+    // in world coordinates until it is converted back to the original mesh.
     const geometry = normalizeForCSG(mesh.geometry, 0, true);
+    geometry.applyMatrix4(mesh.matrixWorld);
     const brush = new Brush(geometry);
     brush.material = csgMaterials;
-    const world = mesh.matrixWorld;
-    world.decompose(brush.position, brush.quaternion, brush.scale);
+    brush.position.set(0, 0, 0);
+    brush.quaternion.identity();
+    brush.scale.set(1, 1, 1);
     brush.updateMatrixWorld(true);
     return brush;
 }
@@ -4860,8 +4868,9 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
             // Convert it into the selected Mesh's local frame before assigning:
             // the mesh can live inside transformed imported-model/group parents.
             targetMesh.updateWorldMatrix(true, false);
-            brush.updateMatrixWorld(true);
-            const resultToMeshLocal = targetMesh.matrixWorld.clone().invert().multiply(brush.matrixWorld);
+            // Imported target brush geometry was baked into world coordinates;
+            // convert the evaluated world-space result back to mesh-local once.
+            const resultToMeshLocal = targetMesh.matrixWorld.clone().invert();
             finalGeometry.applyMatrix4(resultToMeshLocal);
 
             // three-bvh-csg offsets cutter material indices after the target's
