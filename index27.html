@@ -1299,7 +1299,7 @@ function normalizeForCSG(geometry, materialIndex, preserveGroups = false) {
         const start = wasIndexed ? grp.start * 3 : grp.start;
         const count = wasIndexed ? grp.count * 3 : grp.count;
         if (start + count > total) continue;
-        g.addGroup(start, count, Math.max(0, Math.min(2, grp.materialIndex | 0)));
+        g.addGroup(start, count, Math.max(0, grp.materialIndex | 0));
     }
 
     if (g.groups.length === 0) g.addGroup(0, total, 0);
@@ -3219,8 +3219,10 @@ function extractSvgVectorContours(source, viewBox) {
                 tag === 'ellipse' || (tag === 'path' && /[zZ]/.test(d));
             // SVG fills implicitly close open subpaths. getTotalLength samples the source path;
             // close the sampled outline for the native solid-cut pipeline.
-            const count = Math.max(12, Math.min(4096, Math.ceil(length / Math.max(vw, vh) * 700)));
-            if (sampled + count > 24000) throw new Error('Слишком сложный SVG: превышен лимит точек (24000)');
+            // Keep SVG outlines detailed enough for machining while preventing
+            // thousands of tiny CSG triangles per contour from freezing the UI.
+            const count = Math.max(20, Math.min(1400, Math.ceil(length / Math.max(vw, vh) * 260)));
+            if (sampled + count > 10000) throw new Error('Слишком сложный SVG: после оптимизации превышен лимит 10000 точек');
             const matrix = node.getCTM();
             if (!matrix) continue;
             const points = [];
@@ -4625,13 +4627,20 @@ function getSelectedAssemblyMesh() {
     return meshes[0];
 }
 
-function createAssemblyTargetBrush(mesh) {
+function getAssemblyCSGMaterials(mesh) {
+    const source = Array.isArray(mesh.material) ? mesh.material.slice() : [mesh.material];
+    const fallback = materials[params.material] || materials.granite_black;
+    const surface = source[0] || fallback;
+    const side = source[1] || surface;
+    // Keep the imported model's own material(s); append only the neutral cut face.
+    return [surface, side, getRoughMaterial(params.material)];
+}
+
+function createAssemblyTargetBrush(mesh, csgMaterials = getAssemblyCSGMaterials(mesh)) {
     mesh.updateWorldMatrix(true, false);
     const geometry = normalizeForCSG(mesh.geometry, 0, true);
     const brush = new Brush(geometry);
-    // Как и основная CAD-модель: материал 0 — поверхность модели,
-    // материал 1 — боковые поверхности, материал 2 — свежая поверхность реза.
-    brush.material = getCSGMaterials();
+    brush.material = csgMaterials;
     const world = mesh.matrixWorld;
     world.decompose(brush.position, brush.quaternion, brush.scale);
     brush.updateMatrixWorld(true);
@@ -4646,6 +4655,7 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
     const isAssemblyTarget = !!selectedAssemblyTarget && !isPrimaryTarget;
     const assemblyMesh = isAssemblyTarget ? getSelectedAssemblyMesh() : null;
     const targetMesh = isAssemblyTarget ? assemblyMesh : (isPrimaryTarget ? selectedAssemblyTarget : stellaMesh);
+    const importedCSGMaterials = isAssemblyTarget && targetMesh ? getAssemblyCSGMaterials(targetMesh) : null;
     if (!csgAvailable || !targetMesh) {
         cutters.forEach(disposeCSGBrush);
         if (!csgAvailable) setStatus('❌ CSG не загружен');
@@ -4673,7 +4683,7 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
     try {
         setStatus('⏳ Построение BVH и подготовка модели…');
         showLoading(true, 'Построение BVH и подготовка модели…');
-        brush = isAssemblyTarget ? createAssemblyTargetBrush(targetMesh) : createStellaBrush();
+        brush = isAssemblyTarget ? createAssemblyTargetBrush(targetMesh, importedCSGMaterials) : createStellaBrush();
         brush.updateMatrixWorld(true);
         const targetBounds = new THREE.Box3().setFromObject(brush);
         const cutterBounds = cutters.map(c => {
@@ -4743,9 +4753,10 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
             // material slots. Map those cutter-created faces back to slot 2,
             // the neutral rough cut material, while keeping target slots 0/1.
             const groups = finalGeometry.groups || [];
+            const cutMaterialIndex = importedCSGMaterials.length - 1;
             for (const group of groups) {
-                if (group.materialIndex >= 3) group.materialIndex = 2;
-                else group.materialIndex = Math.max(0, Math.min(2, group.materialIndex | 0));
+                if (group.materialIndex >= importedCSGMaterials.length) group.materialIndex = cutMaterialIndex;
+                else group.materialIndex = Math.max(0, Math.min(cutMaterialIndex - 1, group.materialIndex | 0));
             }
             if (!groups.length) {
                 const count = finalGeometry.getIndex()
@@ -4764,7 +4775,7 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
 
             // Slots 0/1 retain the model surface/side appearance; slot 2 is
             // deliberately untextured gray for every newly cut surface.
-            targetMesh.material = getCSGMaterials();
+            targetMesh.material = importedCSGMaterials;
             targetMesh.updateMatrixWorld(true);
             setStatus('✅ CSG применён к выбранной модели сборки');
         } else {
@@ -4899,10 +4910,10 @@ document.getElementById('btn-cut-all')?.addEventListener('click', () => {
             const outer=getEffectiveContourFor(group.outer);
             const holes=group.holes.map(h=>getEffectiveContourFor(h));
             const geo=buildBaseCutGeometry(depth,outer,holes);
-            cutters.push(createCutterBrush(geo,new THREE.Vector3(mirrorX(cx),cy,z),new THREE.Vector3(cs,cs,1),mirrorRot(rot)*Math.PI/180,ry));
+            cutters.push(createCutterBrush(geo,new THREE.Vector3(mirrorX(cx),cutModelY(cy),z),new THREE.Vector3(cs,cs,1),mirrorRot(rot)*Math.PI/180,ry));
             if(type!=='normal' && readCheck('chk-cut-bevel')){
                 const finish=buildFrameFinishGeometry(depth,outer);
-                cutters.push(createCutterBrush(finish.geometry,new THREE.Vector3(mirrorX(cx),cy,computeFrameFinishZCenter(finish.depth)),new THREE.Vector3(cs,cs,1),mirrorRot(rot)*Math.PI/180,ry));
+                cutters.push(createCutterBrush(finish.geometry,new THREE.Vector3(mirrorX(cx),cutModelY(cy),computeFrameFinishZCenter(finish.depth)),new THREE.Vector3(cs,cs,1),mirrorRot(rot)*Math.PI/180,ry));
             }
         }
     } catch(e) { cutters.forEach(disposeCSGBrush); return setStatus('❌ '+e.message); }
