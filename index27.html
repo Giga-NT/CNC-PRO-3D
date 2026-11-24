@@ -3815,21 +3815,17 @@ function updateCutZHint() {
     const stockMax = bounds ? bounds.max : getStellaHalfDepth();
     const stockDepth = Math.max(0, stockMax - stockMin);
 
-    let extrudeDepth, topZ;
-    if (type === 'normal') {
-        extrudeDepth = computeNormalCutExtrudeDepth();
-        topZ = activeCutSide === 'front'
-            ? computeNormalCutZCenter() + extrudeDepth / 2
-            : computeNormalCutZCenter() - extrudeDepth / 2;
-    } else {
-        extrudeDepth = computeFrameExtrudeDepth();
-        topZ = activeCutSide === 'front'
-            ? computeFrameTopZ() + extrudeDepth / 2
-            : computeFrameTopZ() - extrudeDepth / 2;
-    }
+    const extrudeDepth = type === 'normal'
+        ? computeNormalCutExtrudeDepth()
+        : computeFrameExtrudeDepth();
+    const centerZ = type === 'normal'
+        ? computeNormalCutZCenter()
+        : computeFrameTopZ();
 
-    const zMin = Math.min(topZ, topZ - extrudeDepth);
-    const zMax = Math.max(topZ, topZ - extrudeDepth);
+    // Геометрия центрирована по Z. Для обеих сторон пересечение
+    // считается симметрично от центра, а не через условный "верх".
+    const zMin = centerZ - extrudeDepth / 2;
+    const zMax = centerZ + extrudeDepth / 2;
     const ovMin = Math.max(zMin, stockMin);
     const ovMax = Math.min(zMax, stockMax);
     const depth = Math.max(0, ovMax - ovMin);
@@ -3939,6 +3935,78 @@ function resampleClosedPath(points, count, referencePath = points) {
     return result;
 }
 
+function offsetClosedPathAligned(points, distance) {
+    const path = cleanClosedPath(points, 1e-8);
+    if (!Number.isFinite(distance)) throw new Error('Некорректное расстояние смещения контура');
+    if (Math.abs(distance) < 1e-12) return path.map(p => ({ x:p.x, y:p.y }));
+    const area = contourSignedArea(path);
+    if (Math.abs(area) < 1e-12) throw new Error('Нельзя сместить контур с нулевой площадью');
+    const n = path.length;
+    const result = [];
+    for (let i = 0; i < n; i++) {
+        const prev = path[(i + n - 1) % n], cur = path[i], next = path[(i + 1) % n];
+        const ax = cur.x - prev.x, ay = cur.y - prev.y;
+        const bx = next.x - cur.x, by = next.y - cur.y;
+        const al = Math.hypot(ax, ay), bl = Math.hypot(bx, by);
+        if (al < 1e-10 || bl < 1e-10) throw new Error('В контуре обнаружено слишком короткое ребро');
+        const an = { x:-ay/al, y:ax/al }, bn = { x:-by/bl, y:bx/bl };
+        const dot = Math.max(-1, Math.min(1, (ax*bx + ay*by)/(al*bl)));
+        const denom = 1 + dot;
+        let mx = 0, my = 0;
+        if (denom < 1e-7) {
+            // Почти развёрнутый угол: используем безопасную биссектрису,
+            // чтобы не создавать бесконечный выступ на самопересечении.
+            mx = an.x;
+            my = an.y;
+        } else {
+            mx = (an.x + bn.x) / denom;
+            my = (an.y + bn.y) / denom;
+        }
+
+        // Не обрезаем miter на обычных острых углах: такое ограничение
+        // уменьшало фактическую ширину U/V-канавки на острых вершинах
+        // (например, у звезды). Большие значения оставляем только как защиту
+        // от вырожденных почти параллельных рёбер.
+        const miter = Math.hypot(mx, my);
+        const maxMiter = 1000;
+        if (!Number.isFinite(miter) || miter > maxMiter) {
+            throw new Error('Слишком острый угол контура для точного смещения. Добавьте точки или скруглите вершину.');
+        }
+        result.push({ x:cur.x + mx*distance, y:cur.y + my*distance });
+    }
+    if (result.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
+        throw new Error('Смещение породило некорректные координаты');
+    }
+    const resultArea = contourSignedArea(result);
+    if (Math.abs(resultArea) < 1e-12 || Math.sign(resultArea) !== Math.sign(area)) {
+        // Acute concave corners can make a raw miter offset self-intersect.
+        // Retry through Clipper, which resolves intersections before returning
+        // a usable closed polygon instead of aborting the entire preview.
+        const clipper = window.ClipperLib;
+        if (!clipper || !clipper.ClipperOffset) {
+            // CDN may be blocked/offline. Keep contour projection available using
+            // the native miter offset instead of aborting every preview.
+            if (result.every(p => Number.isFinite(p.x) && Number.isFinite(p.y)) &&
+                Math.abs(resultArea) > 1e-12) return result;
+            throw new Error('Не удалось безопасно сместить контур без Clipper. Проверьте ширину шва или загрузите модуль Clipper.');
+        }
+        const scale = 1000000;
+        const integerPath = path.map(p => ({ X: Math.round(p.x * scale), Y: Math.round(p.y * scale) }));
+        const offset = new clipper.ClipperOffset(2.0, 0.25);
+        offset.MiterLimit = 10;
+        offset.AddPath(integerPath, clipper.JoinType.jtMiter, clipper.EndType.etClosedPolygon);
+        const solution = new clipper.Paths();
+        offset.Execute(solution, -distance * Math.sign(area) * scale);
+        const candidates = solution
+            .filter(candidate => candidate.length >= 3 && Math.abs(clipper.Clipper.Area(candidate)) >= 1)
+            .sort((a, b) => Math.abs(clipper.Clipper.Area(b)) - Math.abs(clipper.Clipper.Area(a)));
+        if (!candidates.length) throw new Error('Ширина шва превышает локальную толщину контура');
+        const best = candidates[0].map(p => ({ x: p.X / scale, y: p.Y / scale }));
+        return resampleClosedPath(best, path.length, path);
+    }
+    return result;
+}
+
 function offsetClosedPath(points, distance) {
     // ClipperOffset корректно обрабатывает вогнутые углы и очищает
     // самопересечения, возникающие при смещении сложных замкнутых контуров.
@@ -4024,7 +4092,7 @@ function frameCenterlineMeters(pointsPx, widthM, gapM, side) {
     if (side === 'contour') return path;
     const inward = Math.sign(area);
     const shift = side === 'outside' ? -(gapM + widthM / 2) : widthM / 2;
-    return offsetClosedPath(path, inward * shift);
+    return offsetClosedPathAligned(path, inward * shift);
 }
 
 function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
@@ -4060,8 +4128,8 @@ function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
         // Стенки канавки строим прямым miter-смещением на точное
         // заданное расстояние. Clipper + последующее пересэмплирование
         // меняли расстояние между стенками и визуальную ширину шва.
-        const leftLevel = offsetClosedPath(center, halfWidth);
-        const rightLevel = offsetClosedPath(center, -halfWidth);
+        const leftLevel = offsetClosedPathAligned(center, halfWidth);
+        const rightLevel = offsetClosedPathAligned(center, -halfWidth);
         if (leftLevel.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y)) || rightLevel.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
             throw new Error('Смещение стенок шва создало NaN/Infinity на уровне ' + k + '. Проверьте масштаб и ширину шва.');
         }
@@ -4153,8 +4221,8 @@ function framePreviewRails(pointsPx) {
     const side = document.getElementById('sel-frame-side')?.value || 'inside';
     const center = frameCenterlineMeters(pointsPx, widthM, gapM, side);
     // Preview rails must use the same exact offsets as the cutter walls.
-    const a = offsetClosedPath(center, widthM / 2);
-    const b = offsetClosedPath(center, -widthM / 2);
+    const a = offsetClosedPathAligned(center, widthM / 2);
+    const b = offsetClosedPathAligned(center, -widthM / 2);
     const toPx = p => ({ x:p.x*200 + drawCanvas.width/2, y:drawCanvas.height/2 - p.y*200 });
     return { a:a.map(toPx), b:b.map(toPx) };
 }
