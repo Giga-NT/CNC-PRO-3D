@@ -4823,13 +4823,13 @@ function getAssemblyCSGMaterials(mesh) {
     return [...preserved, getRoughMaterial(params.material)];
 }
 
-function createAssemblyTargetBrush(mesh, csgMaterials = getAssemblyCSGMaterials(mesh)) {
+function createAssemblyTargetBrush(mesh, csgMaterials = getAssemblyCSGMaterials(mesh), worldMatrix = null) {
     mesh.updateWorldMatrix(true, false);
-    // Bake the exact world matrix into a cloned geometry. This avoids matrix
-    // decomposition drift for nested imported models and keeps the CSG result
-    // in world coordinates until it is converted back to the original mesh.
+    // Use one immutable transform snapshot for both baking into world space
+    // and converting the CSG result back to mesh-local coordinates.
+    const sourceWorldMatrix = worldMatrix || mesh.matrixWorld.clone();
     const geometry = normalizeForCSG(mesh.geometry, 0, true);
-    geometry.applyMatrix4(mesh.matrixWorld);
+    geometry.applyMatrix4(sourceWorldMatrix);
     const brush = new Brush(geometry);
     brush.material = csgMaterials;
     brush.position.set(0, 0, 0);
@@ -4872,10 +4872,17 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
     document.getElementById('btn-undo').disabled = false;
 
     let brush = null;
+    let assemblyTargetWorldMatrix = null;
     try {
         setStatus('⏳ Построение BVH и подготовка модели…');
         showLoading(true, 'Построение BVH и подготовка модели…');
-        brush = isAssemblyTarget ? createAssemblyTargetBrush(targetMesh, importedCSGMaterials) : createStellaBrush();
+        if (isAssemblyTarget) {
+            targetMesh.updateWorldMatrix(true, false);
+            assemblyTargetWorldMatrix = targetMesh.matrixWorld.clone();
+        }
+        brush = isAssemblyTarget
+            ? createAssemblyTargetBrush(targetMesh, importedCSGMaterials, assemblyTargetWorldMatrix)
+            : createStellaBrush();
         brush.updateMatrixWorld(true);
         const targetBounds = new THREE.Box3().setFromObject(brush);
         const cutterBounds = cutters.map(c => {
@@ -4936,10 +4943,10 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
             // Evaluator returns geometry in the result Brush's local frame.
             // Convert it into the selected Mesh's local frame before assigning:
             // the mesh can live inside transformed imported-model/group parents.
-            targetMesh.updateWorldMatrix(true, false);
-            // Imported target brush geometry was baked into world coordinates;
-            // convert the evaluated world-space result back to mesh-local once.
-            const resultToMeshLocal = targetMesh.matrixWorld.clone().invert();
+            // Invert the exact matrix used when the source geometry was baked
+            // into world space. Re-reading matrixWorld here can introduce a
+            // position jump if the hierarchy was refreshed during CSG.
+            const resultToMeshLocal = assemblyTargetWorldMatrix.clone().invert();
             finalGeometry.applyMatrix4(resultToMeshLocal);
 
             // three-bvh-csg offsets cutter material indices after the target's
