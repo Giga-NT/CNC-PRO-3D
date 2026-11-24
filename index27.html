@@ -436,7 +436,22 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
                 <button id="btn-assembly-scale">⤢ Масштаб</button>
             </div>
             <div id="assembly-list" style="margin-top:8px;font-size:12px;">Модели ещё не добавлены</div>
-            <div class="draw-instructions">Отметь несколько моделей и нажми «Связать». Клик по названию выбирает объект для перемещения. Внутри связанной группы можно выбрать и двигать отдельную модель — связь сохранится.</div>
+            <div style="margin-top:8px;padding:7px;border:1px solid var(--border);border-radius:5px;">
+                <b style="font-size:11px;">Точные координаты выбранной модели (м)</b>
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:5px;">
+                    <label>X <input type="number" id="assembly-pos-x" step="0.001" value="0"></label>
+                    <label>Y <input type="number" id="assembly-pos-y" step="0.001" value="0"></label>
+                    <label>Z <input type="number" id="assembly-pos-z" step="0.001" value="0"></label>
+                </div>
+                <b style="font-size:11px;">Масштаб по осям</b>
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:5px;">
+                    <label>X <input type="number" id="assembly-scale-x" min="0.001" step="0.001" value="1"></label>
+                    <label>Y <input type="number" id="assembly-scale-y" min="0.001" step="0.001" value="1"></label>
+                    <label>Z <input type="number" id="assembly-scale-z" min="0.001" step="0.001" value="1"></label>
+                </div>
+                <div id="assembly-dimensions" class="draw-instructions" style="margin:6px 0 0;">Габариты: выбери модель</div>
+            </div>
+            <div class="draw-instructions">Отметь несколько моделей и нажми «Связать». Координаты задаются относительно родительской группы, масштаб — по каждой оси. Габариты показаны в мировых координатах.</div>
         </div>
     </div>
 
@@ -5468,12 +5483,57 @@ function addImportedAssemblyModel(root, fileName) {
     setStatus('Добавлена модель: ' + item.name + '. Всего: ' + assemblyItems.length);
 }
 
+function updateAssemblyTransformFields() {
+    const target = selectedAssemblyTarget;
+    const ids = ['x','y','z'];
+    ids.forEach(axis => {
+        const p = document.getElementById('assembly-pos-' + axis);
+        const sc = document.getElementById('assembly-scale-' + axis);
+        if (p) { p.value = target ? Number(target.position[axis]).toFixed(3) : '0'; p.disabled = !target; }
+        if (sc) { sc.value = target ? Number(target.scale[axis]).toFixed(3) : '1'; sc.disabled = !target; }
+    });
+    const dims = document.getElementById('assembly-dimensions');
+    if (dims) {
+        if (!target) dims.textContent = 'Габариты: выбери модель';
+        else {
+            target.updateWorldMatrix(true, true);
+            const box = new THREE.Box3().setFromObject(target);
+            const size = box.getSize(new THREE.Vector3());
+            dims.textContent = 'Габариты X × Y × Z: ' + [size.x,size.y,size.z].map(v => (v * 1000).toFixed(1) + ' мм').join(' × ');
+        }
+    }
+}
+
+['x','y','z'].forEach(axis => {
+    document.getElementById('assembly-pos-' + axis)?.addEventListener('change', e => {
+        if (!selectedAssemblyTarget) return;
+        const value = Number(e.target.value);
+        if (!Number.isFinite(value)) return updateAssemblyTransformFields();
+        selectedAssemblyTarget.position[axis] = value;
+        selectedAssemblyTarget.updateMatrix();
+        selectedAssemblyTarget.updateWorldMatrix(true, true);
+        updateAssemblyTransformFields();
+        setStatus('Координата ' + axis.toUpperCase() + ' установлена: ' + value.toFixed(3) + ' м');
+    });
+    document.getElementById('assembly-scale-' + axis)?.addEventListener('change', e => {
+        if (!selectedAssemblyTarget) return;
+        const value = Number(e.target.value);
+        if (!Number.isFinite(value) || value <= 0) return updateAssemblyTransformFields();
+        selectedAssemblyTarget.scale[axis] = value;
+        selectedAssemblyTarget.updateMatrix();
+        selectedAssemblyTarget.updateWorldMatrix(true, true);
+        updateAssemblyTransformFields();
+        setStatus('Масштаб ' + axis.toUpperCase() + ' установлен: ' + value.toFixed(3));
+    });
+});
+
 function selectAssemblyTarget(target) {
     const attachedToScene = isObjectInSceneGraph(target);
     selectedAssemblyTarget = attachedToScene ? target : null;
     if (!syncTransformControlTarget(selectedAssemblyTarget) && target) {
         setStatus('⚠️ Нельзя выбрать модель: она не находится в сцене');
     }
+    updateAssemblyTransformFields();
     renderAssemblyList();
 }
 
