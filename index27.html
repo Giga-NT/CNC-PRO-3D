@@ -1373,6 +1373,22 @@ function createCutterBrush(geometry, position, scale, rotationZ, rotationY = 0, 
     return brush;
 }
 
+function isObjectInSceneGraph(object) {
+    for (let node = object || null; node; node = node.parent) {
+        if (node === scene) return true;
+    }
+    return false;
+}
+
+function syncTransformControlTarget(target) {
+    if (transformControl.object) transformControl.detach();
+    if (target && isObjectInSceneGraph(target)) {
+        transformControl.attach(target);
+        return true;
+    }
+    return false;
+}
+
 function replaceStellaFromBrush(resultBrush) {
     const newGeometry = resultBrush.geometry;
     // Evaluator уже возвращает normals. Повторный пересчёт на всей модели
@@ -1412,9 +1428,11 @@ function replaceStellaFromBrush(resultBrush) {
     }
 
     const previousStella = stellaMesh;
-    const wasSelected = selectedAssemblyTarget === previousStella;
-    // TransformControls must be detached before its attached object leaves the scene graph.
-    if (transformControl.object === previousStella) transformControl.detach();
+    const wasSelected = selectedAssemblyTarget === previousStella ||
+        (transformControl.object === previousStella);
+    // Detach unconditionally before replacing a primary mesh; this also clears stale
+    // TransformControls references left by undo/project restoration paths.
+    if (transformControl.object) transformControl.detach();
 
     if (previousStella) {
         scene.remove(previousStella);
@@ -1427,14 +1445,12 @@ function replaceStellaFromBrush(resultBrush) {
     scene.add(stellaMesh);
 
     // Keep the assembly registry and active selection pointing at the replacement mesh.
-    const primaryItem = assemblyItems.find(item => item.isPrimary && item.root === previousStella);
+    const primaryItem = assemblyItems.find(item => item.isPrimary && item.root === previousStella) ||
+        assemblyItems.find(item => item.isPrimary);
     if (primaryItem) primaryItem.root = stellaMesh;
-    if (wasSelected) {
+    if (wasSelected || !selectedAssemblyTarget || selectedAssemblyTarget === previousStella) {
         selectedAssemblyTarget = stellaMesh;
-        if (primaryItem) {
-            primaryItem.root = stellaMesh;
-            transformControl.attach(stellaMesh);
-        }
+        syncTransformControlTarget(stellaMesh);
         renderAssemblyList();
     }
 
@@ -4636,7 +4652,10 @@ document.getElementById('btn-undo').addEventListener('click', () => {
     }
     if (undoStack.length === 0 || !stellaMesh) return;
     const state = undoStack.pop();
-    disposeStellaMesh(stellaMesh);
+    const previousStella = stellaMesh;
+    const wasSelected = selectedAssemblyTarget === previousStella || transformControl.object === previousStella;
+    if (transformControl.object) transformControl.detach();
+    disposeStellaMesh(previousStella);
 
     // Восстанавливаем группы точно как были
     if (state.groups && state.groups.length > 0) {
@@ -4652,6 +4671,13 @@ document.getElementById('btn-undo').addEventListener('click', () => {
     stellaMesh.castShadow = true;
     stellaMesh.receiveShadow = true;
     scene.add(stellaMesh);
+    const primaryItem = assemblyItems.find(item => item.isPrimary && item.root === previousStella) ||
+        assemblyItems.find(item => item.isPrimary);
+    if (primaryItem) primaryItem.root = stellaMesh;
+    if (wasSelected || !selectedAssemblyTarget || selectedAssemblyTarget === previousStella) {
+        selectedAssemblyTarget = stellaMesh;
+        syncTransformControlTarget(stellaMesh);
+    }
 
     cutHistory = state.cutHistory || [];
     updatePriceDisplay();
@@ -5358,15 +5384,11 @@ function addImportedAssemblyModel(root, fileName) {
 }
 
 function selectAssemblyTarget(target) {
-    if (transformControl.object) transformControl.detach();
-    // Never attach TransformControls to an object that is no longer in the active scene graph.
-    let attachedToScene = false;
-    for (let node = target || null; node; node = node.parent) {
-        if (node === scene) { attachedToScene = true; break; }
-    }
+    const attachedToScene = isObjectInSceneGraph(target);
     selectedAssemblyTarget = attachedToScene ? target : null;
-    if (selectedAssemblyTarget) transformControl.attach(selectedAssemblyTarget);
-    else if (target) setStatus('⚠️ Нельзя выбрать модель: она не находится в сцене');
+    if (!syncTransformControlTarget(selectedAssemblyTarget) && target) {
+        setStatus('⚠️ Нельзя выбрать модель: она не находится в сцене');
+    }
     renderAssemblyList();
 }
 
@@ -6272,6 +6294,14 @@ window.addEventListener('blur', () => {
 
 function animate() {
     requestAnimationFrame(animate);
+    // Safety net: never let TransformControls keep updating an object removed
+    // from the scene (for example after undo or a model replacement).
+    if (transformControl.object && !isObjectInSceneGraph(transformControl.object)) {
+        transformControl.detach();
+        if (selectedAssemblyTarget && !isObjectInSceneGraph(selectedAssemblyTarget)) {
+            selectedAssemblyTarget = null;
+        }
+    }
     controls.update();
     renderer.render(scene, camera);
 }
