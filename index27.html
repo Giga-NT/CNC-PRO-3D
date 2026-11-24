@@ -3902,6 +3902,7 @@ function offsetClosedPathAligned(points, distance) {
     if (Math.abs(area) < 1e-12) throw new Error('Нельзя сместить контур с нулевой площадью');
     const n = path.length;
     const result = [];
+    let needsRobustOffset = false;
     for (let i = 0; i < n; i++) {
         const prev = path[(i + n - 1) % n], cur = path[i], next = path[(i + 1) % n];
         const ax = cur.x - prev.x, ay = cur.y - prev.y;
@@ -3927,27 +3928,19 @@ function offsetClosedPathAligned(points, distance) {
         // (например, у звезды). Большие значения оставляем только как защиту
         // от вырожденных почти параллельных рёбер.
         const miter = Math.hypot(mx, my);
-        const maxMiter = 1000;
-        if (!Number.isFinite(miter) || miter > maxMiter) {
-            throw new Error('Слишком острый угол контура для точного смещения. Добавьте точки или скруглите вершину.');
+        // Плотно дискретизированные SVG/Bezier-кривые иногда дают локальный
+        // почти развёрнутый угол. Не прерываем построение: передаём такой
+        // контур в Clipper, который корректно разрешает самопересечения offset.
+        if (!Number.isFinite(miter) || miter > 1000) {
+            needsRobustOffset = true;
+            break;
         }
         result.push({ x:cur.x + mx*distance, y:cur.y + my*distance });
     }
-    if (result.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
-        throw new Error('Смещение породило некорректные координаты');
-    }
-    const resultArea = contourSignedArea(result);
-    if (Math.abs(resultArea) < 1e-12 || Math.sign(resultArea) !== Math.sign(area)) {
-        // Acute concave corners can make a raw miter offset self-intersect.
-        // Retry through Clipper, which resolves intersections before returning
-        // a usable closed polygon instead of aborting the entire preview.
+    const offsetWithClipper = () => {
         const clipper = window.ClipperLib;
         if (!clipper || !clipper.ClipperOffset) {
-            // CDN may be blocked/offline. Keep contour projection available using
-            // the native miter offset instead of aborting every preview.
-            if (result.every(p => Number.isFinite(p.x) && Number.isFinite(p.y)) &&
-                Math.abs(resultArea) > 1e-12) return result;
-            throw new Error('Не удалось безопасно сместить контур без Clipper. Проверьте ширину шва или загрузите модуль Clipper.');
+            throw new Error('Для смещения кривого контура требуется загруженный модуль Clipper.');
         }
         const scale = 1000000;
         const integerPath = path.map(p => ({ X: Math.round(p.x * scale), Y: Math.round(p.y * scale) }));
@@ -3962,6 +3955,16 @@ function offsetClosedPathAligned(points, distance) {
         if (!candidates.length) throw new Error('Ширина шва превышает локальную толщину контура');
         const best = candidates[0].map(p => ({ x: p.X / scale, y: p.Y / scale }));
         return resampleClosedPath(best, path.length, path);
+    };
+    if (needsRobustOffset) return offsetWithClipper();
+    if (result.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
+        throw new Error('Смещение породило некорректные координаты');
+    }
+    const resultArea = contourSignedArea(result);
+    if (Math.abs(resultArea) < 1e-12 || Math.sign(resultArea) !== Math.sign(area)) {
+        // Острые вогнутые углы могут дать самопересечение miter-offset.
+        // Clipper разрешает пересечения и возвращает пригодный замкнутый контур.
+        return offsetWithClipper();
     }
     return result;
 }
