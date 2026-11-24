@@ -4710,17 +4710,39 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
         }
 
         if (isAssemblyTarget) {
+            // Evaluator returns geometry in the result Brush's local frame.
+            // Convert it into the selected Mesh's local frame before assigning:
+            // the mesh can live inside transformed imported-model/group parents.
+            targetMesh.updateWorldMatrix(true, false);
+            brush.updateMatrixWorld(true);
+            const resultToMeshLocal = targetMesh.matrixWorld.clone().invert().multiply(brush.matrixWorld);
+            finalGeometry.applyMatrix4(resultToMeshLocal);
+
+            // three-bvh-csg offsets cutter material indices after the target's
+            // material slots. Map those cutter-created faces back to slot 2,
+            // the neutral rough cut material, while keeping target slots 0/1.
+            const groups = finalGeometry.groups || [];
+            for (const group of groups) {
+                if (group.materialIndex >= 3) group.materialIndex = 2;
+                else group.materialIndex = Math.max(0, Math.min(2, group.materialIndex | 0));
+            }
+            if (!groups.length) {
+                const count = finalGeometry.getIndex()
+                    ? finalGeometry.getIndex().count
+                    : finalGeometry.getAttribute('position').count;
+                finalGeometry.addGroup(0, count, 0);
+            }
+
             if (targetMesh.geometry) targetMesh.geometry.dispose();
             targetMesh.geometry = finalGeometry;
             targetMesh.geometry.computeBoundingBox();
             targetMesh.geometry.computeBoundingSphere();
-            targetMesh.geometry.computeVertexNormals();
-            targetMesh.geometry.computeBoundingBox();
-            targetMesh.geometry.computeBoundingSphere();
+            if (!targetMesh.geometry.getAttribute('normal')) targetMesh.geometry.computeVertexNormals();
             targetMesh.geometry.attributes.position.needsUpdate = true;
-            targetMesh.geometry.attributes.normal.needsUpdate = true;
-            // Важно назначить массив материалов CSG и самому Mesh:
-            // иначе группы поверхности реза используют исходную текстуру STL.
+            if (targetMesh.geometry.attributes.normal) targetMesh.geometry.attributes.normal.needsUpdate = true;
+
+            // Slots 0/1 retain the model surface/side appearance; slot 2 is
+            // deliberately untextured gray for every newly cut surface.
             targetMesh.material = getCSGMaterials();
             targetMesh.updateMatrixWorld(true);
             setStatus('✅ CSG применён к выбранной модели сборки');
