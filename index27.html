@@ -3922,14 +3922,17 @@ function offsetClosedPathAligned(points, distance) {
             my = (an.y + bn.y) / denom;
         }
 
-        // Не обрезаем miter на обычных острых углах: такое ограничение
-        // уменьшало фактическую ширину U/V-канавки на острых вершинах
-        // (например, у звезды). Большие значения оставляем только как защиту
-        // от вырожденных почти параллельных рёбер.
+        // Ограничиваем только патологически длинный выступ на почти
+        // развёрнутом угле. Раньше такой узел либо ронял превью, либо
+        // передавался в Clipper и мог давать длинные ложные лучи.
+        // Для обычных углов miter остаётся точным, без ограничения.
         const miter = Math.hypot(mx, my);
-        const maxMiter = 1000;
-        if (!Number.isFinite(miter) || miter > maxMiter) {
-            throw new Error('Слишком острый угол контура для точного смещения. Добавьте точки или скруглите вершину.');
+        if (!Number.isFinite(miter)) throw new Error('Некорректная геометрия угла контура');
+        const maxMiter = 12;
+        if (miter > maxMiter) {
+            const scale = maxMiter / miter;
+            mx *= scale;
+            my *= scale;
         }
         result.push({ x:cur.x + mx*distance, y:cur.y + my*distance });
     }
