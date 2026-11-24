@@ -4156,7 +4156,7 @@ function frameCenterlineMeters(pointsPx, widthM, gapM, side) {
     if (side === 'contour') return path;
     const inward = Math.sign(area);
     const shift = side === 'outside' ? -(gapM + widthM / 2) : widthM / 2;
-    return offsetClosedPathAligned(path, inward * shift); // Центральная линия сохраняет каждую исходную вершину и фазу контура
+    return offsetClosedPath(path, inward * shift); // Устойчивая геометрическая эквидистанта через Clipper
 }
 
 function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
@@ -4192,8 +4192,8 @@ function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
         // Стенки канавки строим прямым miter-смещением на точное
         // заданное расстояние. Clipper + последующее пересэмплирование
         // меняли расстояние между стенками и визуальную ширину шва.
-        const leftLevel = offsetClosedPathAligned(center, halfWidth);
-        const rightLevel = offsetClosedPathAligned(center, -halfWidth);
+        const leftLevel = offsetClosedPath(center, halfWidth);
+        const rightLevel = offsetClosedPath(center, -halfWidth);
         if (leftLevel.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y)) || rightLevel.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
             throw new Error('Смещение стенок шва создало NaN/Infinity на уровне ' + k + '. Проверьте масштаб и ширину шва.');
         }
@@ -4280,8 +4280,8 @@ function framePreviewRails(pointsPx) {
     const side = document.getElementById('sel-frame-side')?.value || 'inside';
     const center = frameCenterlineMeters(pointsPx, widthM, gapM, side);
     // Preview rails must use the same exact offsets as the cutter walls.
-    const a = offsetClosedPathAligned(center, widthM / 2);
-    const b = offsetClosedPathAligned(center, -widthM / 2);
+    const a = offsetClosedPath(center, widthM / 2);
+    const b = offsetClosedPath(center, -widthM / 2);
     const toPx = p => ({ x:p.x*200 + drawCanvas.width/2, y:drawCanvas.height/2 - p.y*200 });
     return { a:a.map(toPx), b:b.map(toPx) };
 }
