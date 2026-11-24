@@ -4910,10 +4910,16 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
             // material slots. Map those cutter-created faces back to slot 2,
             // the neutral rough cut material, while keeping target slots 0/1.
             const groups = finalGeometry.groups || [];
+            // CSG result material indices for cutter faces start immediately
+            // after the target's ORIGINAL slots. For a plain STL there is one
+            // original slot, so index 1 is already the cut face (not texture).
+            const originalMaterialCount = Math.max(1, importedCSGMaterials.length - 1);
             const cutMaterialIndex = importedCSGMaterials.length - 1;
             for (const group of groups) {
-                if (group.materialIndex >= importedCSGMaterials.length) group.materialIndex = cutMaterialIndex;
-                else group.materialIndex = Math.max(0, Math.min(cutMaterialIndex - 1, group.materialIndex | 0));
+                const materialIndex = Math.max(0, group.materialIndex | 0);
+                group.materialIndex = materialIndex >= originalMaterialCount
+                    ? cutMaterialIndex
+                    : Math.min(originalMaterialCount - 1, materialIndex);
             }
             if (!groups.length) {
                 const count = finalGeometry.getIndex()
