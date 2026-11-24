@@ -443,7 +443,13 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
                     <label>Y <input type="number" id="assembly-pos-y" step="0.001" value="0"></label>
                     <label>Z <input type="number" id="assembly-pos-z" step="0.001" value="0"></label>
                 </div>
-                <b style="font-size:11px;">Масштаб по осям</b>
+                <label style="display:block;font-size:11px;margin-top:7px;">Режим изменения:
+                    <select id="assembly-transform-mode" style="width:100%;margin-top:4px;">
+                        <option value="scale">Масштаб — коэффициент</option>
+                        <option value="dimensions">Точные размеры — мм</option>
+                    </select>
+                </label>
+                <b id="assembly-scale-label" style="font-size:11px;">Масштаб по осям (×)</b>
                 <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:5px;margin-top:5px;">
                     <label>X <input type="number" id="assembly-scale-x" min="0.001" step="0.001" value="1"></label>
                     <label>Y <input type="number" id="assembly-scale-y" min="0.001" step="0.001" value="1"></label>
@@ -1532,6 +1538,12 @@ function isMeshValid(mesh) {
 const transformControl = new TransformControls(camera, renderer.domElement);
 transformControl.addEventListener('dragging-changed', e => {
     controls.enabled = !e.value;
+    if (!e.value) updateAssemblyTransformFields();
+});
+transformControl.addEventListener('change', () => {
+    if (selectedAssemblyTarget && transformControl.object === selectedAssemblyTarget) {
+        updateAssemblyTransformFields();
+    }
 });
 transformControl.showX = true;
 transformControl.showY = true;
@@ -5487,25 +5499,45 @@ function addImportedAssemblyModel(root, fileName) {
     setStatus('Добавлена модель: ' + item.name + '. Всего: ' + assemblyItems.length);
 }
 
+function getAssemblyWorldDimensions(target) {
+    if (!target) return new THREE.Vector3();
+    target.updateWorldMatrix(true, true);
+    return new THREE.Box3().setFromObject(target).getSize(new THREE.Vector3());
+}
+
+function updateAssemblyTransformModeUI() {
+    const mode = document.getElementById('assembly-transform-mode')?.value || 'scale';
+    const label = document.getElementById('assembly-scale-label');
+    if (label) label.textContent = mode === 'dimensions' ? 'Габарит по осям (мм)' : 'Масштаб по осям (×)';
+    const inputs = ['x','y','z'].map(axis => document.getElementById('assembly-scale-' + axis));
+    inputs.forEach((input, index) => {
+        if (!input) return;
+        input.step = mode === 'dimensions' ? '0.1' : '0.001';
+        input.min = mode === 'dimensions' ? '0.1' : '0.001';
+        input.title = mode === 'dimensions' ? 'Задай требуемый размер в миллиметрах' : 'Задай коэффициент масштаба';
+    });
+    updateAssemblyTransformFields();
+}
+
 function updateAssemblyTransformFields() {
     const target = selectedAssemblyTarget;
-    const ids = ['x','y','z'];
-    ids.forEach(axis => {
+    const mode = document.getElementById('assembly-transform-mode')?.value || 'scale';
+    const size = getAssemblyWorldDimensions(target);
+    ['x','y','z'].forEach(axis => {
         const p = document.getElementById('assembly-pos-' + axis);
         const sc = document.getElementById('assembly-scale-' + axis);
         if (p) { p.value = target ? Number(target.position[axis]).toFixed(3) : '0'; p.disabled = !target; }
-        if (sc) { sc.value = target ? Number(target.scale[axis]).toFixed(3) : '1'; sc.disabled = !target; }
+        if (sc) {
+            const value = !target ? (mode === 'dimensions' ? 0 : 1) :
+                mode === 'dimensions' ? size[axis] * 1000 : target.scale[axis];
+            sc.value = Number(value).toFixed(mode === 'dimensions' ? 1 : 3);
+            sc.disabled = !target;
+        }
     });
     const dims = document.getElementById('assembly-dimensions');
-    if (dims) {
-        if (!target) dims.textContent = 'Габариты: выбери модель';
-        else {
-            target.updateWorldMatrix(true, true);
-            const box = new THREE.Box3().setFromObject(target);
-            const size = box.getSize(new THREE.Vector3());
-            dims.textContent = 'Габариты X × Y × Z: ' + [size.x,size.y,size.z].map(v => (v * 1000).toFixed(1) + ' мм').join(' × ');
-        }
-    }
+    if (dims) dims.textContent = target
+        ? 'Текущие габариты: ' + [size.x,size.y,size.z].map(v => (v * 1000).toFixed(1) + ' мм').join(' × ')
+        : 'Габариты: выбери модель';
 }
 
 ['x','y','z'].forEach(axis => {
@@ -5520,16 +5552,27 @@ function updateAssemblyTransformFields() {
         setStatus('Координата ' + axis.toUpperCase() + ' установлена: ' + value.toFixed(3) + ' м');
     });
     document.getElementById('assembly-scale-' + axis)?.addEventListener('change', e => {
-        if (!selectedAssemblyTarget) return;
+        const target = selectedAssemblyTarget;
+        if (!target) return;
         const value = Number(e.target.value);
         if (!Number.isFinite(value) || value <= 0) return updateAssemblyTransformFields();
-        selectedAssemblyTarget.scale[axis] = value;
-        selectedAssemblyTarget.updateMatrix();
-        selectedAssemblyTarget.updateWorldMatrix(true, true);
+        const mode = document.getElementById('assembly-transform-mode')?.value || 'scale';
+        if (mode === 'dimensions') {
+            const current = getAssemblyWorldDimensions(target)[axis] * 1000;
+            if (!(current > 0)) return updateAssemblyTransformFields();
+            target.scale[axis] *= value / current;
+        } else {
+            target.scale[axis] = value;
+        }
+        target.updateMatrix();
+        target.updateWorldMatrix(true, true);
         updateAssemblyTransformFields();
-        setStatus('Масштаб ' + axis.toUpperCase() + ' установлен: ' + value.toFixed(3));
+        setStatus(mode === 'dimensions'
+            ? 'Размер ' + axis.toUpperCase() + ' установлен: ' + value.toFixed(1) + ' мм'
+            : 'Масштаб ' + axis.toUpperCase() + ' установлен: ' + value.toFixed(3) + '×');
     });
 });
+document.getElementById('assembly-transform-mode')?.addEventListener('change', updateAssemblyTransformModeUI);
 
 function selectAssemblyTarget(target) {
     const attachedToScene = isObjectInSceneGraph(target);
