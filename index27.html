@@ -3894,6 +3894,48 @@ function cleanClosedPath(points, tolerance = 0.0005) {
 // Смещение с сохранением соответствия вершин исходного контура.
 // Каждая выходная точка строится на пересечении смещённых соседних рёбер;
 // никакого независимого пересэмплирования левой и правой стенок.
+function resampleClosedPath(points, count, referencePath = points) {
+    if (!Array.isArray(points) || points.length < 3 || count < 3) {
+        throw new Error('Недостаточно точек для построения смещённого контура');
+    }
+
+    // Пересэмплирование по длине дуги сохраняет порядок обхода и равномерно
+    // распределяет вершины. Удаление «наименее выраженных» точек ломало
+    // соответствие сегментов на звёздах и сложных SVG.
+    const referenceArea = contourSignedArea(referencePath);
+    let path = points.map(p => ({ x: p.x, y: p.y }));
+    if (Math.sign(contourSignedArea(path)) !== Math.sign(referenceArea)) path.reverse();
+
+    const anchor = referencePath[0];
+    let first = 0, best = Infinity;
+    for (let i = 0; i < path.length; i++) {
+        const d = Math.hypot(path[i].x - anchor.x, path[i].y - anchor.y);
+        if (d < best) { best = d; first = i; }
+    }
+    path = path.slice(first).concat(path.slice(0, first));
+
+    const lengths = path.map((p, i) => {
+        const q = path[(i + 1) % path.length];
+        return Math.hypot(q.x - p.x, q.y - p.y);
+    });
+    const perimeter = lengths.reduce((a, b) => a + b, 0);
+    if (!(perimeter > 1e-10)) throw new Error('Периметр смещённого контура слишком мал');
+
+    const result = [];
+    let edge = 0, edgeStart = 0;
+    for (let i = 0; i < count; i++) {
+        const target = perimeter * i / count;
+        while (edge < lengths.length - 1 && edgeStart + lengths[edge] < target) {
+            edgeStart += lengths[edge++];
+        }
+        const len = lengths[edge];
+        const t = len > 1e-12 ? Math.max(0, Math.min(1, (target - edgeStart) / len)) : 0;
+        const a = path[edge], b = path[(edge + 1) % path.length];
+        result.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+    }
+    return result;
+}
+
 function offsetClosedPath(points, distance) {
     // ClipperOffset корректно обрабатывает вогнутые углы и очищает
     // самопересечения, возникающие при смещении сложных замкнутых контуров.
