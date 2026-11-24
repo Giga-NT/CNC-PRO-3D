@@ -3960,6 +3960,7 @@ function offsetClosedPathAligned(points, distance) {
     if (Math.abs(area) < 1e-12) throw new Error('Нельзя сместить контур с нулевой площадью');
     const n = path.length;
     const result = [];
+    let needsClipperFallback = false;
     for (let i = 0; i < n; i++) {
         const prev = path[(i + n - 1) % n], cur = path[i], next = path[(i + 1) % n];
         const ax = cur.x - prev.x, ay = cur.y - prev.y;
@@ -3987,7 +3988,18 @@ function offsetClosedPathAligned(points, distance) {
         const miter = Math.hypot(mx, my);
         const maxMiter = 50;
         if (!Number.isFinite(miter) || miter > maxMiter) {
-            throw new Error('Слишком острый угол контура для точного смещения. Добавьте точки или скруглите вершину.');
+            // Настоящие острия (например, нижний зубец и верхняя выемка сердца)
+            // при развороте ребра дают неограниченный miter. Не прерываем
+            // построение: ограничиваем проекцию до конечной точки, а сам
+            // выступ корректно срежет Clipper через jtMiter с MiterLimit.
+            const safeLen = 4;
+            if (Number.isFinite(miter) && miter > 0) {
+                const k = safeLen / miter;
+                mx *= k; my *= k;
+            } else {
+                mx = 0; my = 0;
+            }
+            needsClipperFallback = true;
         }
         result.push({ x:cur.x + mx*distance, y:cur.y + my*distance });
     }
@@ -3995,7 +4007,7 @@ function offsetClosedPathAligned(points, distance) {
         throw new Error('Смещение породило некорректные координаты');
     }
     const resultArea = contourSignedArea(result);
-    if (Math.abs(resultArea) < 1e-12 || Math.sign(resultArea) !== Math.sign(area)) {
+    if (needsClipperFallback || Math.abs(resultArea) < 1e-12 || Math.sign(resultArea) !== Math.sign(area)) {
         // Acute concave corners can make a raw miter offset self-intersect.
         // Retry through Clipper, which resolves intersections before returning
         // a usable closed polygon instead of aborting the entire preview.
