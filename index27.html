@@ -5491,6 +5491,30 @@ function addImportedAssemblyModel(root, fileName) {
         }
     });
     assemblyRoot.add(root);
+
+    // При загрузке выравниваем центр импортированной модели по X
+    // относительно основной CAD-модели. Это проверка по мировым bbox,
+    // поэтому учитываются уже существующие повороты и масштабы объектов.
+    if (stellaMesh && stellaMesh !== root) {
+        stellaMesh.updateWorldMatrix(true, true);
+        root.updateWorldMatrix(true, true);
+        const primaryBox = new THREE.Box3().setFromObject(stellaMesh);
+        const importedBox = new THREE.Box3().setFromObject(root);
+        if (!primaryBox.isEmpty() && !importedBox.isEmpty()) {
+            const primaryCenterX = primaryBox.getCenter(new THREE.Vector3()).x;
+            const importedCenter = importedBox.getCenter(new THREE.Vector3());
+            const deltaWorld = new THREE.Vector3(primaryCenterX - importedCenter.x, 0, 0);
+            if (Math.abs(deltaWorld.x) > 1e-6 && root.parent) {
+                const parent = root.parent;
+                const currentCenterLocal = parent.worldToLocal(importedCenter.clone());
+                const desiredCenterLocal = parent.worldToLocal(importedCenter.clone().add(deltaWorld));
+                root.position.add(desiredCenterLocal.sub(currentCenterLocal));
+                root.updateWorldMatrix(true, true);
+                log('Импорт выровнен по X относительно основной модели: ' + deltaWorld.x.toFixed(4) + ' м');
+            }
+        }
+    }
+
     let firstMesh = null;
     root.traverse(node => { if (node.isMesh && !firstMesh) firstMesh = node; });
     isImportedModel = true;
