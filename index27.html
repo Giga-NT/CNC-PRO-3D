@@ -3852,9 +3852,28 @@ function offsetClosedPathAligned(points, distance) {
     if (result.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) {
         throw new Error('Смещение породило некорректные координаты');
     }
-    if (Math.abs(contourSignedArea(result)) < 1e-12 ||
-        Math.sign(contourSignedArea(result)) !== Math.sign(area)) {
-        throw new Error('При заданной ширине смещённый контур схлопнулся или изменил направление. Уменьшите ширину шва');
+    const resultArea = contourSignedArea(result);
+    if (Math.abs(resultArea) < 1e-12 || Math.sign(resultArea) !== Math.sign(area)) {
+        // Acute concave corners can make a raw miter offset self-intersect.
+        // Retry through Clipper, which resolves intersections before returning
+        // a usable closed polygon instead of aborting the entire preview.
+        const clipper = window.ClipperLib;
+        if (!clipper || !clipper.ClipperOffset) {
+            throw new Error('Контур требует геометрической очистки, но модуль Clipper недоступен');
+        }
+        const scale = 1000000;
+        const integerPath = path.map(p => ({ X: Math.round(p.x * scale), Y: Math.round(p.y * scale) }));
+        const offset = new clipper.ClipperOffset(2.0, 0.25);
+        offset.MiterLimit = 10;
+        offset.AddPath(integerPath, clipper.JoinType.jtMiter, clipper.EndType.etClosedPolygon);
+        const solution = new clipper.Paths();
+        offset.Execute(solution, -distance * Math.sign(area) * scale);
+        const candidates = solution
+            .filter(candidate => candidate.length >= 3 && Math.abs(clipper.Clipper.Area(candidate)) >= 1)
+            .sort((a, b) => Math.abs(clipper.Clipper.Area(b)) - Math.abs(clipper.Clipper.Area(a)));
+        if (!candidates.length) throw new Error('Ширина шва превышает локальную толщину контура');
+        const best = candidates[0].map(p => ({ x: p.X / scale, y: p.Y / scale }));
+        return resampleClosedPath(best, path.length, path);
     }
     return result;
 }
@@ -3963,10 +3982,10 @@ function offsetClosedPath(points, distance) {
                 if (candidateArea > bestArea) { best = candidate; bestArea = candidateArea; }
             }
         }
-        if (validCount > 1) {
-            throw new Error('Смещение разделило контур на ' + validCount +
-                ' отдельных частей. Уменьшите ширину шва или измените положение траектории.');
-        }
+        // Tight concavities can split an inward offset into several islands.
+        // The groove generator currently builds one continuous wall pair, so
+        // retain the dominant valid island instead of aborting all preview/CNC.
+        // Smaller detached remnants are below the tool's continuous path.
         return best;
     };
 
