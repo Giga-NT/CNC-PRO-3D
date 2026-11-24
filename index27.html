@@ -1153,6 +1153,7 @@ const roughCutGrayMaterial    = new THREE.MeshStandardMaterial({ color: 0xf0f0f0
 const roughCutRedMaterial     = new THREE.MeshStandardMaterial({ color: 0xe8d5c8, roughness: 1.0, metalness: 0.0, side: THREE.DoubleSide });
 const roughCutMarbleMaterial  = new THREE.MeshStandardMaterial({ color: 0x4a4a4a, roughness: 1.0, metalness: 0.0, side: THREE.DoubleSide });
 const roughCutBronzeMaterial  = new THREE.MeshStandardMaterial({ color: 0xd6a55c, roughness: 0.9, metalness: 0.3, side: THREE.DoubleSide });
+const csgCutterMaterial = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, metalness: 0, side: THREE.DoubleSide });
 
 function getRoughMaterial(key) {
     if (key === 'marble_white') return roughCutMarbleMaterial;
@@ -1342,16 +1343,30 @@ function createStellaBrush() {
     return brush;
 }
 
-function createCutterBrush(geometry, position, scale, rotationZ, rotationY = 0, rotationX = 0) {
-    // normalizeForCSG возвращает клонированную геометрию с гарантированными UV.
-    geometry = normalizeForCSG(geometry, 2);
+function applyActiveTargetTransform(object, localPosition, localEuler) {
+    const target = selectedAssemblyTarget || stellaMesh;
+    if (!target) {
+        object.position.copy(localPosition);
+        object.rotation.copy(localEuler);
+        object.updateMatrixWorld(true);
+        return;
+    }
+    target.updateWorldMatrix(true, false);
+    const worldQuaternion = new THREE.Quaternion();
+    target.matrixWorld.decompose(new THREE.Vector3(), worldQuaternion, new THREE.Vector3());
+    object.position.copy(localPosition).applyMatrix4(target.matrixWorld);
+    object.quaternion.copy(worldQuaternion).multiply(new THREE.Quaternion().setFromEuler(localEuler));
+    object.updateMatrixWorld(true);
+}
 
+function createCutterBrush(geometry, position, scale, rotationZ, rotationY = 0, rotationX = 0) {
+    // Cutter has its own untextured material. CSG maps its generated faces
+    // to the dedicated cut-face slot on the target after evaluation.
+    geometry = normalizeForCSG(geometry, 0);
     const brush = new Brush(geometry);
-    brush.material = getCSGMaterials();
-    brush.position.copy(position);
+    brush.material = [csgCutterMaterial];
     brush.scale.copy(scale);
-    brush.rotation.set(rotationX, rotationY, rotationZ);
-    brush.updateMatrixWorld(true);
+    applyActiveTargetTransform(brush, position, new THREE.Euler(rotationX, rotationY, rotationZ));
     return brush;
 }
 
@@ -3177,6 +3192,20 @@ function insertShape(shape) {
 
 
 /* ---- SVG IMPORT: native vector geometry sampling (no raster tracing) ---- */
+function svgStrokeOutline(points, width) {
+    if (points.length < 2 || !(width > 0)) return [];
+    const half = width / 2, left = [], right = [];
+    for (let i = 0; i < points.length; i++) {
+        const prev = points[Math.max(0, i - 1)], next = points[Math.min(points.length - 1, i + 1)];
+        let dx = next.x - prev.x, dy = next.y - prev.y;
+        const len = Math.hypot(dx, dy) || 1;
+        const nx = -dy / len, ny = dx / len;
+        left.push({ x: points[i].x + nx * half, y: points[i].y + ny * half });
+        right.push({ x: points[i].x - nx * half, y: points[i].y - ny * half });
+    }
+    return left.concat(right.reverse());
+}
+
 function extractSvgVectorContours(source, viewBox) {
     const parser = new DOMParser();
     const parsed = parser.parseFromString(source, 'image/svg+xml');
@@ -3207,7 +3236,11 @@ function extractSvgVectorContours(source, viewBox) {
         for (const node of nodes) {
             const style = getComputedStyle(node);
             if (style.display === 'none' || style.visibility === 'hidden' ||
-                Number(style.opacity || 1) <= 0 || style.fill === 'none') continue;
+                Number(style.opacity || 1) <= 0) continue;
+            const hasFill = style.fill !== 'none';
+            const hasStroke = style.stroke && style.stroke !== 'none' &&
+                parseFloat(style.strokeWidth || style.getPropertyValue('stroke-width') || '0') > 0;
+            if (!hasFill && !hasStroke) continue;
             if (node.closest('defs,clipPath,mask,pattern,marker,symbol')) continue;
             if (typeof node.getTotalLength !== 'function' || typeof node.getPointAtLength !== 'function') continue;
             let length;
@@ -3227,12 +3260,20 @@ function extractSvgVectorContours(source, viewBox) {
             if (!matrix) continue;
             const points = [];
             for (let i = 0; i < count; i++) {
-                const p = node.getPointAtLength(length * i / count);
+                const p = node.getPointAtLength(length * i / (explicitlyClosed ? count : count - 1));
                 const t = new DOMPoint(p.x, p.y).matrixTransform(matrix);
                 if (Number.isFinite(t.x) && Number.isFinite(t.y)) points.push({ x: t.x, y: t.y });
             }
             sampled += points.length;
-            if (points.length >= 3) {
+            if (points.length >= 2 && hasStroke) {
+                const rawWidth = parseFloat(style.strokeWidth || style.getPropertyValue('stroke-width') || '1') || 1;
+                const matrixScale = Math.sqrt(Math.abs(matrix.a * matrix.d - matrix.b * matrix.c)) || 1;
+                const strokePolygon = svgStrokeOutline(points, rawWidth * matrixScale);
+                if (strokePolygon.length >= 3 && Math.abs(contourSignedArea(strokePolygon)) > 0.02) {
+                    contours.push(strokePolygon);
+                }
+            }
+            if (hasFill && points.length >= 3) {
                 const first = points[0], last = points[points.length - 1];
                 if (Math.hypot(first.x-last.x, first.y-last.y) < 0.01) points.pop();
                 if (points.length >= 3 && Math.abs(contourSignedArea(points)) > 0.02) contours.push(points);
@@ -3241,7 +3282,7 @@ function extractSvgVectorContours(source, viewBox) {
     } finally {
         host.remove();
     }
-    if (!contours.length) throw new Error('В SVG не найдены замкнутые заполненные контуры. Контуры только с обводкой пока не импортируются.');
+    if (!contours.length) throw new Error('В SVG не найдены заполненные контуры или линии швов с заданной толщиной обводки.');
     return contours;
 }
 
@@ -3558,9 +3599,19 @@ document.getElementById('btn-text-side-back').addEventListener('click', () => {
    ============================================================ */
 
 function getSelectedAssemblyCutBounds() {
-    if (!selectedAssemblyTarget) return null;
-    selectedAssemblyTarget.updateWorldMatrix(true, true);
-    const bounds = new THREE.Box3().setFromObject(selectedAssemblyTarget);
+    const target = selectedAssemblyTarget || stellaMesh;
+    if (!target) return null;
+    target.updateWorldMatrix(true, true);
+    const inverse = target.matrixWorld.clone().invert();
+    const bounds = new THREE.Box3();
+    bounds.makeEmpty();
+    target.traverse(node => {
+        if (!node.isMesh || !node.geometry) return;
+        if (!node.geometry.boundingBox) node.geometry.computeBoundingBox();
+        if (!node.geometry.boundingBox) return;
+        const relative = inverse.clone().multiply(node.matrixWorld);
+        bounds.union(node.geometry.boundingBox.clone().applyMatrix4(relative));
+    });
     return bounds.isEmpty() ? null : bounds;
 }
 
@@ -3611,10 +3662,8 @@ function getFrameGapMeters() {
 }
 
 function getSelectedAssemblyZBounds() {
-    if (!selectedAssemblyTarget) return null;
-    selectedAssemblyTarget.updateWorldMatrix(true, true);
-    const bounds = new THREE.Box3().setFromObject(selectedAssemblyTarget);
-    if (bounds.isEmpty()) return null;
+    const bounds = getSelectedAssemblyCutBounds();
+    if (!bounds) return null;
     return { min: bounds.min.z, max: bounds.max.z };
 }
 
@@ -4630,10 +4679,10 @@ function getSelectedAssemblyMesh() {
 function getAssemblyCSGMaterials(mesh) {
     const source = Array.isArray(mesh.material) ? mesh.material.slice() : [mesh.material];
     const fallback = materials[params.material] || materials.granite_black;
-    const surface = source[0] || fallback;
-    const side = source[1] || surface;
-    // Keep the imported model's own material(s); append only the neutral cut face.
-    return [surface, side, getRoughMaterial(params.material)];
+    const preserved = source.filter(Boolean);
+    if (!preserved.length) preserved.push(fallback);
+    // Preserve every original material slot and append one neutral cut-face slot.
+    return [...preserved, getRoughMaterial(params.material)];
 }
 
 function createAssemblyTargetBrush(mesh, csgMaterials = getAssemblyCSGMaterials(mesh)) {
@@ -4779,6 +4828,10 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
             targetMesh.updateMatrixWorld(true);
             setStatus('✅ CSG применён к выбранной модели сборки');
         } else {
+            const primaryCutSlot = getCSGMaterials().length - 1;
+            for (const group of (finalGeometry.groups || [])) {
+                if (group.materialIndex >= getCSGMaterials().length) group.materialIndex = primaryCutSlot;
+            }
             replaceStellaFromBrush({ geometry: finalGeometry });
             if (!isMeshValid(stellaMesh)) throw new Error('Результат основной модели некорректен');
         }
@@ -5139,10 +5192,10 @@ function runPrimitiveCSG(operation, opName) {
     );
     geo.applyMatrix4(new THREE.Matrix4().makeRotationFromEuler(euler));
     
-    geo = normalizeForCSG(geo, 2);
+    geo = normalizeForCSG(geo, 0);
 
     const brush = new Brush(geo);
-    brush.material = getCSGMaterials();
+    brush.material = [csgCutterMaterial];
     brush.position.set(t.x, t.y, t.z);
     brush.updateMatrixWorld(true);
 
