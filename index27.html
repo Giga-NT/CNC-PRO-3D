@@ -1393,16 +1393,18 @@ function applyActiveTargetTransform(object, localPosition, localEuler) {
         object.updateMatrixWorld(true);
         return;
     }
-    // Preserve the complete parent transform (including nested/non-uniform
-    // scales) instead of decomposing matrixWorld into position/quaternion/scale.
     target.updateWorldMatrix(true, true);
-    const local = new THREE.Matrix4().compose(
-        localPosition,
-        new THREE.Quaternion().setFromEuler(localEuler),
-        object.scale.clone()
-    );
+    const worldPosition = localPosition.clone().applyMatrix4(target.matrixWorld);
+    const worldScale = new THREE.Vector3();
+    const worldQuaternion = new THREE.Quaternion();
+    const ignoredPosition = new THREE.Vector3();
+    target.matrixWorld.decompose(ignoredPosition, worldQuaternion, worldScale);
+
+    // The cutter follows the model's world position and orientation, but its
+    // millimetre dimensions must not inherit the imported model's scale.
+    worldQuaternion.multiply(new THREE.Quaternion().setFromEuler(localEuler));
     object.matrixAutoUpdate = false;
-    object.matrix.copy(target.matrixWorld).multiply(local);
+    object.matrix.compose(worldPosition, worldQuaternion, object.scale.clone());
     object.matrixWorld.copy(object.matrix);
     object.matrixWorldNeedsUpdate = false;
 }
@@ -4143,8 +4145,11 @@ function frameCenterlineMeters(pointsPx, widthM, gapM, side) {
 
 function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
     const profile = document.getElementById('sel-cut-profile')?.value || 'rectangular';
-    const widthM = getCutWidthMeters();
-    const gapM = getFrameGapMeters();
+    // inp-cs scales the SVG artwork, but must not change physical tool dimensions.
+    // Compensate the cutter geometry before the final XY scale is applied.
+    const artworkScale = Math.max(0.001, Math.abs(readSlider('inp-cs', 0.5)));
+    const widthM = getCutWidthMeters() / artworkScale;
+    const gapM = getFrameGapMeters() / artworkScale;
     const side = document.getElementById('sel-frame-side')?.value || 'inside';
     if (!(widthM > 0) || !(depth > 0)) throw new Error('Ширина и глубина шва должны быть больше нуля');
 
@@ -4160,7 +4165,7 @@ function buildFrameGrooveGeometry(depth, pointsPx, finishPass = false) {
         if (finishPass) {
             // Второй проход: узкая часть фрезы входит в уже выбранный шов,
             // а расширяющаяся верхняя часть снимает только кромки у входа.
-            const extra = Math.min(getCutBevelSizeMeters(), Math.max(widthM * 0.75, 0.0005));
+            const extra = Math.min(getCutBevelSizeMeters() / artworkScale, Math.max(widthM * 0.75, 0.0005));
             const finishProfile = document.getElementById('sel-frame-finish-profile')?.value || 'bevel';
             let shapeFactor = 1 - t;
             if (finishProfile === 'round') shapeFactor = Math.sqrt(Math.max(0, 1 - t * t));
