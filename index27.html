@@ -1395,6 +1395,17 @@ function applyActiveTargetTransform(object, localPosition, localEuler) {
     }
     target.updateWorldMatrix(true, true);
     const worldPosition = localPosition.clone().applyMatrix4(target.matrixWorld);
+    // Import alignment is a display/assembly correction for the STL root.
+    // Cut coordinates are authored in the model's own frame, so do not apply
+    // that one-time alignment offset to the cutter a second time.
+    const importAlignmentOffset = new THREE.Vector3();
+    for (let node = target; node && node !== scene; node = node.parent) {
+        const offset = node.userData && node.userData.importAlignmentOffsetWorld;
+        if (offset && Number.isFinite(offset.x) && Number.isFinite(offset.y) && Number.isFinite(offset.z)) {
+            importAlignmentOffset.add(offset);
+        }
+    }
+    worldPosition.sub(importAlignmentOffset);
     const worldScale = new THREE.Vector3();
     const worldQuaternion = new THREE.Quaternion();
     const ignoredPosition = new THREE.Vector3();
@@ -5518,6 +5529,9 @@ function addImportedAssemblyModel(root, fileName) {
                 const currentCenterLocal = parent.worldToLocal(importedCenter.clone());
                 const desiredCenterLocal = parent.worldToLocal(importedCenter.clone().add(deltaWorld));
                 root.position.add(desiredCenterLocal.sub(currentCenterLocal));
+                // Remember the one-time X alignment separately so cutter
+                // placement can compensate for it without moving the model.
+                root.userData.importAlignmentOffsetWorld = deltaWorld.clone();
                 root.updateWorldMatrix(true, true);
                 log('Импорт выровнен по X относительно основной модели: ' + deltaWorld.x.toFixed(4) + ' м');
             }
