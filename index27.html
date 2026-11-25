@@ -6737,7 +6737,7 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
         const dr = pixels[p] - bg[0], dg = pixels[p + 1] - bg[1], db = pixels[p + 2] - bg[2];
         const distance = Math.sqrt(dr * dr + dg * dg + db * db);
         // На изображениях с прозрачностью контур задаёт alpha; на JPG — отличие от фона.
-        scalar[i] = pixels[p + 3] < 250 ? alpha : Math.min(1, distance / 255);
+        scalar[i] = (x === 0 || y === 0 || x === nx || y === ny) ? 0 : (pixels[p + 3] < 250 ? alpha : Math.min(1, distance / 255));
         grayValues[i] = (0.2126 * pixels[p] + 0.7152 * pixels[p + 1] + 0.0722 * pixels[p + 2]) / 255;
         if (scalar[i] > maxMask) maxMask = scalar[i];
     }
@@ -6783,14 +6783,10 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
         vertexCache.set(key, index);
         return index;
     };
-    const isBoundaryEdge = (a, b) => {
-        const onContour = Math.abs(a.s - threshold) < 1e-5 && Math.abs(b.s - threshold) < 1e-5;
-        const onOuter = (Math.abs(a.gx) < 1e-5 && Math.abs(b.gx) < 1e-5) ||
-            (Math.abs(a.gx - nx) < 1e-5 && Math.abs(b.gx - nx) < 1e-5) ||
-            (Math.abs(a.gy) < 1e-5 && Math.abs(b.gy) < 1e-5) ||
-            (Math.abs(a.gy - ny) < 1e-5 && Math.abs(b.gy - ny) < 1e-5);
-        return onContour || onOuter;
-    };
+    // Стенки создаём только по интерполированному контуру рисунка.
+    // Край исходного прямоугольного холста никогда не становится частью рельефа.
+    const isBoundaryEdge = (a, b) =>
+        Math.abs(a.s - threshold) < 1e-5 && Math.abs(b.s - threshold) < 1e-5;
     const emitClippedTriangle = (triangle) => {
         let poly = triangle;
         const output = [];
