@@ -477,6 +477,18 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
         <label>Ширина рисунка: <span class="val" id="relief-size-value">75</span>%
             <input type="range" id="relief-size" min="20" max="100" step="1" value="75">
         </label>
+        <div class="draw-instructions">Точное положение на поверхности (координаты в метрах от центра стелы):</div>
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;">
+            <label>X, м <input type="number" id="relief-pos-x" step="0.005" value="0"></label>
+            <label>Y, м <input type="number" id="relief-pos-y" step="0.005" value="0"></label>
+            <label>Ширина, м <input type="number" id="relief-width" min="0.01" step="0.005" value="0.30"></label>
+            <label>Поворот, ° <input type="number" id="relief-rotation" step="1" value="0"></label>
+        </div>
+        <div class="side-switch">
+            <span class="side-label">Сторона:</span>
+            <button type="button" id="relief-side-front" class="active-tool">⬜ Лицо</button>
+            <button type="button" id="relief-side-back">⬛ Оборот</button>
+        </div>
         <label>Сглаживание: <span class="val" id="relief-blur-value">0</span>
             <input type="range" id="relief-blur" min="0" max="5" step="0.5" value="0">
         </label>
@@ -6601,6 +6613,38 @@ const reliefSizeInput = document.getElementById('relief-size');
 const reliefBlurInput = document.getElementById('relief-blur');
 const reliefInvertInput = document.getElementById('relief-invert');
 const reliefResolutionInput = document.getElementById('relief-resolution');
+const reliefPosXInput=document.getElementById('relief-pos-x'), reliefPosYInput=document.getElementById('relief-pos-y');
+const reliefWidthInput=document.getElementById('relief-width'), reliefRotationInput=document.getElementById('relief-rotation');
+let imageReliefSide='front', imageReliefPreviewTexture=null;
+function getImageReliefPlacement(){return{x:Number(reliefPosXInput.value)||0,y:Number(reliefPosYInput.value)||0,width:Math.max(.01,Number(reliefWidthInput.value)||.30),rotation:Number(reliefRotationInput.value)||0,side:imageReliefSide};}
+function disposeImageReliefPreview(){if(imageReliefMesh){scene.remove(imageReliefMesh);imageReliefMesh.geometry?.dispose();imageReliefMesh.material?.dispose();imageReliefMesh=null;}if(imageReliefPreviewTexture){imageReliefPreviewTexture.dispose();imageReliefPreviewTexture=null;}}
+function makeImageReliefPreviewTexture(image){
+ const canvas=document.createElement('canvas');canvas.width=512;canvas.height=Math.max(64,Math.round(512*image.naturalHeight/image.naturalWidth));
+ const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(image,0,0,canvas.width,canvas.height);
+ const frame=ctx.getImageData(0,0,canvas.width,canvas.height),d=frame.data,corners=[];
+ for(const [cx,cy] of [[0,0],[1,0],[0,1],[1,1]]){let r=0,g=0,b=0,n=0;for(let yy=0;yy<8;yy++)for(let xx=0;xx<8;xx++){const x=cx?canvas.width-1-xx:xx,y=cy?canvas.height-1-yy:yy,p=(y*canvas.width+x)*4;if(d[p+3]>200){r+=d[p];g+=d[p+1];b+=d[p+2];n++;}}if(n)corners.push([r/n,g/n,b/n]);}
+ const bg=[0,1,2].map(k=>corners.length?corners.reduce((v,c)=>v+c[k],0)/corners.length:255);
+ for(let p=0;p<d.length;p+=4){const dr=d[p]-bg[0],dg=d[p+1]-bg[1],db=d[p+2]-bg[2];if(d[p+3]<=12||(d[p+3]>=245&&Math.sqrt(dr*dr+dg*dg+db*db)<=38))d[p+3]=0;}
+ ctx.putImageData(frame,0,0);const texture=new THREE.CanvasTexture(canvas);texture.colorSpace=THREE.SRGBColorSpace;return texture;
+}
+function updateImageReliefPreview(){
+ if(!reliefSourceImage||!stellaMesh?.geometry)return;
+ stellaMesh.geometry.computeBoundingBox();const box=stellaMesh.geometry.boundingBox,p=getImageReliefPlacement(),back=p.side==='back';
+ const width=p.width,height=width/(reliefSourceImage.naturalWidth/reliefSourceImage.naturalHeight);
+ if(!imageReliefMesh){imageReliefPreviewTexture=makeImageReliefPreviewTexture(reliefSourceImage);imageReliefMesh=new THREE.Mesh(new THREE.PlaneGeometry(width,height),new THREE.MeshBasicMaterial({map:imageReliefPreviewTexture,transparent:true,opacity:.82,depthWrite:false,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:-2}));imageReliefMesh.name='Image relief placement preview';imageReliefMesh.renderOrder=20;scene.add(imageReliefMesh);}
+ else{imageReliefMesh.geometry.dispose();imageReliefMesh.geometry=new THREE.PlaneGeometry(width,height);}
+ const localPos=new THREE.Vector3(p.x,p.y,back?box.min.z-.001:box.max.z+.001).multiply(stellaMesh.scale).applyQuaternion(stellaMesh.quaternion).add(stellaMesh.position);
+ imageReliefMesh.position.copy(localPos);imageReliefMesh.quaternion.copy(stellaMesh.quaternion).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0,back?Math.PI:0,p.rotation*Math.PI/180)));
+ imageReliefMesh.scale.copy(stellaMesh.scale);imageReliefMesh.updateMatrixWorld(true);
+}
+function syncReliefWidthFromPercent(){
+ if(!stellaMesh||!reliefSourceImage)return;stellaMesh.geometry.computeBoundingBox();const box=stellaMesh.geometry.boundingBox;
+ const aspect=reliefSourceImage.naturalWidth/reliefSourceImage.naturalHeight;
+ reliefWidthInput.value=Math.max(.01,Math.min((box.max.x-box.min.x)*Number(reliefSizeInput.value)/100,(box.max.y-box.min.y)*.68*aspect)).toFixed(3);
+}
+[reliefPosXInput,reliefPosYInput,reliefWidthInput,reliefRotationInput,reliefDepthInput,reliefSizeInput,reliefBlurInput,reliefInvertInput,reliefResolutionInput].forEach(input=>input.addEventListener('input',()=>{updateReliefControls();if(input===reliefSizeInput)syncReliefWidthFromPercent();updateImageReliefPreview();}));
+document.getElementById('relief-side-front').addEventListener('click',()=>{imageReliefSide='front';document.getElementById('relief-side-front').classList.add('active-tool');document.getElementById('relief-side-back').classList.remove('active-tool');updateImageReliefPreview();});
+document.getElementById('relief-side-back').addEventListener('click',()=>{imageReliefSide='back';document.getElementById('relief-side-back').classList.add('active-tool');document.getElementById('relief-side-front').classList.remove('active-tool');updateImageReliefPreview();});
 
 function updateReliefControls() {
     document.getElementById('relief-depth-value').textContent = reliefDepthInput.value;
@@ -6631,8 +6675,9 @@ reliefFileInput.addEventListener('change', event => {
         document.getElementById('relief-image-name').textContent =
             file.name + ' · ' + image.naturalWidth + ' × ' + image.naturalHeight;
         document.getElementById('btn-build-image-relief').disabled = !stellaMesh;
+        if(stellaMesh){syncReliefWidthFromPercent();updateImageReliefPreview();}
         document.getElementById('relief-status').textContent =
-            stellaMesh ? 'Изображение загружено. Настрой глубину и создай рельеф.' : 'Изображение загружено. Сначала создай стелу.';
+            stellaMesh ? 'Изображение загружено. Выставь положение, размер и поворот. Полупрозрачное изображение показывает место будущего рельефа.' : 'Изображение загружено. Сначала создай стелу.';
     };
     image.onerror = () => {
         URL.revokeObjectURL(url);
@@ -6641,15 +6686,19 @@ reliefFileInput.addEventListener('change', event => {
     image.src = url;
 });
 
-function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPercent, blur, invert, resolution) {
+function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPercent, blur, invert, resolution, placement = {}) {
     const maxWidth = stoneBox.max.x - stoneBox.min.x;
     const maxHeight = stoneBox.max.y - stoneBox.min.y;
     if (!(maxWidth > 0 && maxHeight > 0)) throw new Error('Не удалось определить размеры лицевой поверхности стелы.');
     const aspect = image.naturalWidth / image.naturalHeight;
     const fitWidth = maxWidth * widthPercent / 100;
     const fitHeight = maxHeight * 0.68;
-    const width = Math.min(fitWidth, fitHeight * aspect);
+    const width = Number(placement.width) > 0 ? Number(placement.width) : Math.min(fitWidth, fitHeight * aspect);
     const height = width / aspect;
+    const centerX = Number.isFinite(Number(placement.x)) ? Number(placement.x) : 0;
+    const centerY = Number.isFinite(Number(placement.y)) ? Number(placement.y) : 0;
+    const rotation = (Number(placement.rotation) || 0) * Math.PI / 180;
+    const side = placement.side === 'back' ? 'back' : 'front';
     if (!(width > 0 && height > 0)) throw new Error('Некорректные размеры изображения.');
 
     // Ограничиваем сетку для стабильной работы CSG: базово 384, максимум 640.
@@ -6693,10 +6742,13 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
     }
     if (!activePixels) throw new Error('Объект не найден: фон занимает всё изображение. Попробуй изображение с более контрастным фоном.');
 
-    const x0 = (stoneBox.min.x + stoneBox.max.x - width) / 2;
-    const y0 = (stoneBox.min.y + stoneBox.max.y - height) / 2;
-    const faceZ = stoneBox.max.z;
-    const cutterTopZ = faceZ + Math.max(0.001, depthMeters * 0.15);
+    const faceZ = side === 'back' ? stoneBox.min.z : stoneBox.max.z;
+    const cutterTopZ = faceZ + (side === 'back' ? -1 : 1) * Math.max(0.001, depthMeters * 0.15);
+    const rotatePoint = (x, y) => {
+        const dx = x - centerX, dy = y - centerY;
+        return { x: centerX + dx * Math.cos(rotation) - dy * Math.sin(rotation),
+                 y: centerY + dx * Math.sin(rotation) + dy * Math.cos(rotation) };
+    };
     const count = (nx + 1) * (ny + 1);
     const positions = new Float32Array(count * 2 * 3);
     const uvs = new Float32Array(count * 2 * 2);
@@ -6711,13 +6763,13 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
             const gray = (0.2126 * pixels[p] + 0.7152 * pixels[p + 1] + 0.0722 * pixels[p + 2]) / 255;
             const level = (invert ? 1 - gray : gray) * alpha;
             bottomDepths[i] = 0.00015 + Math.max(0, level) * depthMeters;
-            const x = x0 + width * col / nx;
-            const y = y0 + height * (1 - row / ny);
+            const point = rotatePoint(centerX + width * (col / nx - 0.5), centerY + height * (0.5 - row / ny));
+            const x = point.x, y = point.y;
             const base = i * 3;
             positions[base] = x; positions[base + 1] = y; positions[base + 2] = cutterTopZ;
             positions[(count + i) * 3] = x;
             positions[(count + i) * 3 + 1] = y;
-            positions[(count + i) * 3 + 2] = faceZ - bottomDepths[i];
+            positions[(count + i) * 3 + 2] = faceZ + (side === 'back' ? 1 : -1) * bottomDepths[i];
             uvs[i * 2] = uvs[(count + i) * 2] = col / nx;
             uvs[i * 2 + 1] = uvs[(count + i) * 2 + 1] = 1 - row / ny;
         }
@@ -6764,6 +6816,11 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
         }
     }
     const compactIndices = indexOffset === indices.length ? indices : indices.slice(0, indexOffset);
+    if (side === 'back') {
+        for (let i = 0; i < compactIndices.length; i += 3) {
+            const swap = compactIndices[i + 1]; compactIndices[i + 1] = compactIndices[i + 2]; compactIndices[i + 2] = swap;
+        }
+    }
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
@@ -6785,12 +6842,16 @@ function removeImageRelief() {
         removeButton.disabled = true;
         return;
     }
-    if (undoStack[undoStack.length - 1] !== imageReliefUndoState) {
+    const activeUndoStack = imageReliefUndoState && imageReliefUndoState.mesh ? assemblyUndoStack : undoStack;
+    if (activeUndoStack[activeUndoStack.length - 1] !== imageReliefUndoState) {
         document.getElementById('relief-status').textContent =
             'После рельефа были выполнены другие операции. Сначала отмени их кнопкой «Отменить», затем удали рельеф.';
         return;
     }
-    document.getElementById('btn-undo').click();
+    if(activeUndoStack===assemblyUndoStack){
+        const state=activeUndoStack.pop();
+        if(state&&state.mesh&&state.geometry){state.mesh.geometry.dispose();state.mesh.geometry=state.geometry;state.mesh.material=state.material;state.mesh.geometry.computeBoundingBox();state.mesh.geometry.computeBoundingSphere();}
+    } else document.getElementById('btn-undo').click();
     imageReliefUndoState = null;
     removeButton.disabled = true;
     document.getElementById('relief-status').textContent = 'Рельеф удалён. Исходная геометрия стелы восстановлена.';
@@ -6810,7 +6871,7 @@ document.getElementById('btn-build-image-relief').addEventListener('click', asyn
             reliefSourceImage, stellaMesh.geometry.boundingBox,
             Number(reliefDepthInput.value) / 1000,
             Number(reliefSizeInput.value), Number(reliefBlurInput.value),
-            reliefInvertInput.checked, Number(reliefResolutionInput.value)
+            reliefInvertInput.checked, Number(reliefResolutionInput.value), getImageReliefPlacement()
         );
         const cutter = new Brush(geometry);
         cutter.material = getCSGMaterials();
@@ -6823,12 +6884,12 @@ document.getElementById('btn-build-image-relief').addEventListener('click', asyn
         document.getElementById('relief-status').textContent =
             'Подготовлен режущий объём (' + vertices.toLocaleString('ru-RU') +
             ' вершин). Выполняется вычитание из тела стелы…';
-        const undoDepthBeforeRelief = undoStack.length;
+        const useAssemblyUndo = !!(selectedAssemblyTarget && !(assemblyItems.find(item => item.root === selectedAssemblyTarget) || {}).isPrimary);
+        const undoDepthBeforeRelief = useAssemblyUndo ? assemblyUndoStack.length : undoStack.length;
         const ok = await runCSG([cutter], 'Рельеф по изображению', () => {
-            imageReliefMesh = null;
-            imageReliefUndoState = undoStack.length > undoDepthBeforeRelief
-                ? undoStack[undoStack.length - 1]
-                : null;
+            disposeImageReliefPreview();
+            const activeUndoStack = useAssemblyUndo ? assemblyUndoStack : undoStack;
+            imageReliefUndoState = activeUndoStack.length > undoDepthBeforeRelief ? activeUndoStack[activeUndoStack.length - 1] : null;
             removeButton.disabled = !imageReliefUndoState;
             document.getElementById('relief-status').textContent =
                 'Изображение вырезано непосредственно в геометрии стелы. Его можно удалить кнопкой «Удалить рельеф», пока не выполнены другие операции.';
