@@ -6737,11 +6737,11 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
         const dr = pixels[p] - bg[0], dg = pixels[p + 1] - bg[1], db = pixels[p + 2] - bg[2];
         const distance = Math.sqrt(dr * dr + dg * dg + db * db);
         // На изображениях с прозрачностью контур задаёт alpha; на JPG — отличие от фона.
-        scalar[i] = pixels[p + 3] < 250 ? alpha : Math.min(1, distance / 38);
+        scalar[i] = pixels[p + 3] < 250 ? alpha : Math.min(1, distance / 255);
         grayValues[i] = (0.2126 * pixels[p] + 0.7152 * pixels[p + 1] + 0.0722 * pixels[p + 2]) / 255;
         if (scalar[i] > maxMask) maxMask = scalar[i];
     }
-    const threshold = 0.12;
+    const threshold = 38 / 255;
     if (maxMask <= threshold) throw new Error('Объект не найден: фон занимает всё изображение. Попробуй изображение с более контрастным фоном.');
 
     const faceZ = side === 'back' ? stoneBox.min.z : stoneBox.max.z;
@@ -6770,12 +6770,18 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
         };
     };
     const positions = [], uvs = [], indices = [];
+    const vertexCache = new Map();
     const addVertex = (v, isBottom) => {
+        const key = (isBottom ? 'b:' : 't:') + Math.round(v.gx * 100000) + ':' + Math.round(v.gy * 100000);
+        const cached = vertexCache.get(key);
+        if (cached !== undefined) return cached;
+        const index = positions.length / 3;
         positions.push(v.x, v.y, isBottom
             ? faceZ + (side === 'back' ? 1 : -1) * v.depth
             : cutterTopZ);
         uvs.push(v.u, v.v);
-        return positions.length / 3 - 1;
+        vertexCache.set(key, index);
+        return index;
     };
     const isBoundaryEdge = (a, b) => {
         const onContour = Math.abs(a.s - threshold) < 1e-5 && Math.abs(b.s - threshold) < 1e-5;
