@@ -7082,7 +7082,15 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
         const holeContours = holes.map(loop => loop.map(v => new THREE.Vector2(v.x, v.y)));
         const capVertices = [outer, ...holes].flatMap(loop => loop.map(v => addVertex(v, false)));
         const capFaces = THREE.ShapeUtils.triangulateShape(contour, holeContours);
-        for (const face of capFaces) indices.push(capVertices[face[0]], capVertices[face[1]], capVertices[face[2]]);
+        for (const face of capFaces) {
+            const ia = capVertices[face[0]], ib = capVertices[face[1]], ic = capVertices[face[2]];
+            const ax = positions[ia * 3], ay = positions[ia * 3 + 1];
+            const bx = positions[ib * 3], by = positions[ib * 3 + 1];
+            const cx = positions[ic * 3], cy = positions[ic * 3 + 1];
+            const cross = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+            if (cross >= 0) indices.push(ia, ib, ic);
+            else indices.push(ia, ic, ib);
+        }
     }
     if (!indices.length) throw new Error('Не удалось построить поверхность рельефа.');
     const compactPositions = new Float32Array(positions);
