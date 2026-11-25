@@ -6593,6 +6593,7 @@ document.addEventListener('keydown', e => {
 let reliefSourceImage = null;
 let reliefSourceName = '';
 let imageReliefMesh = null;
+let imageReliefUndoState = null;
 
 const reliefFileInput = document.getElementById('relief-image-file');
 const reliefDepthInput = document.getElementById('relief-depth');
@@ -6775,14 +6776,24 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
 }
 
 function removeImageRelief() {
-    // The image is now carved into stellaMesh itself. Undo restores the previous solid.
-    if (imageReliefMesh) {
-        if (imageReliefMesh.parent) imageReliefMesh.parent.remove(imageReliefMesh);
-        if (imageReliefMesh.geometry) imageReliefMesh.geometry.dispose();
-        if (imageReliefMesh.material) imageReliefMesh.material.dispose();
-        imageReliefMesh = null;
+    const removeButton = document.getElementById('btn-remove-image-relief');
+    // The relief is part of the stone geometry. Restore the saved pre-relief
+    // geometry through the normal undo path, but only while this relief is
+    // still the latest geometry operation.
+    if (!imageReliefUndoState) {
+        document.getElementById('relief-status').textContent = 'Нет сохранённого состояния рельефа для удаления.';
+        removeButton.disabled = true;
+        return;
     }
-    document.getElementById('btn-remove-image-relief').disabled = true;
+    if (undoStack[undoStack.length - 1] !== imageReliefUndoState) {
+        document.getElementById('relief-status').textContent =
+            'После рельефа были выполнены другие операции. Сначала отмени их кнопкой «Отменить», затем удали рельеф.';
+        return;
+    }
+    document.getElementById('btn-undo').click();
+    imageReliefUndoState = null;
+    removeButton.disabled = true;
+    document.getElementById('relief-status').textContent = 'Рельеф удалён. Исходная геометрия стелы восстановлена.';
 }
 
 document.getElementById('btn-build-image-relief').addEventListener('click', async () => {
@@ -6790,7 +6801,9 @@ document.getElementById('btn-build-image-relief').addEventListener('click', asyn
     if (!reliefSourceImage) return document.getElementById('relief-status').textContent = 'Сначала выбери изображение.';
     if (!csgAvailable) return document.getElementById('relief-status').textContent = 'Булев модуль не загружен — вырезание в камне недоступно.';
     const buildButton = document.getElementById('btn-build-image-relief');
+    const removeButton = document.getElementById('btn-remove-image-relief');
     buildButton.disabled = true;
+    removeButton.disabled = true;
     try {
         stellaMesh.geometry.computeBoundingBox();
         const geometry = buildImageReliefCutterGeometry(
@@ -6810,11 +6823,15 @@ document.getElementById('btn-build-image-relief').addEventListener('click', asyn
         document.getElementById('relief-status').textContent =
             'Подготовлен режущий объём (' + vertices.toLocaleString('ru-RU') +
             ' вершин). Выполняется вычитание из тела стелы…';
+        const undoDepthBeforeRelief = undoStack.length;
         const ok = await runCSG([cutter], 'Рельеф по изображению', () => {
             imageReliefMesh = null;
-            document.getElementById('btn-remove-image-relief').disabled = true;
+            imageReliefUndoState = undoStack.length > undoDepthBeforeRelief
+                ? undoStack[undoStack.length - 1]
+                : null;
+            removeButton.disabled = !imageReliefUndoState;
             document.getElementById('relief-status').textContent =
-                'Изображение вырезано непосредственно в геометрии стелы. Это единая изменённая модель для STL/GLB.';
+                'Изображение вырезано непосредственно в геометрии стелы. Его можно удалить кнопкой «Удалить рельеф», пока не выполнены другие операции.';
             setStatus('Рельеф выфрезерован в поверхности стелы.');
         }, SUBTRACTION);
         if (!ok) {
@@ -6825,7 +6842,7 @@ document.getElementById('btn-build-image-relief').addEventListener('click', asyn
         log('Рельеф по изображению: ' + error.message);
         document.getElementById('relief-status').textContent = 'Ошибка построения: ' + error.message;
     } finally {
-        buildButton.disabled = false;
+        buildButton.disabled = !stellaMesh || !reliefSourceImage;
     }
 });
 document.getElementById('btn-remove-image-relief').addEventListener('click', removeImageRelief);
