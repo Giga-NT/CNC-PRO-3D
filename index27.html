@@ -6761,6 +6761,7 @@ reliefFileInput.addEventListener('change', event => {
         document.getElementById('relief-image-name').textContent =
             file.name + ' · ' + image.naturalWidth + ' × ' + image.naturalHeight;
         document.getElementById('btn-build-image-relief').disabled = !stellaMesh;
+        document.getElementById('btn-build-image-relief-direct').disabled = !stellaMesh;
         if(stellaMesh){syncReliefWidthFromPercent();updateImageReliefPreview();}
         document.getElementById('relief-status').textContent =
             stellaMesh ? 'Изображение загружено. Выставь положение, размер и поворот. Полупрозрачное изображение показывает место будущего рельефа.' : 'Изображение загружено. Сначала создай стелу.';
@@ -7180,7 +7181,7 @@ function buildImageReliefDirectGeometry(sourceImage, sourceGeometry, depthMeters
         return Math.max(0,Math.min(depthMeters,depthMeters*level))*mask;
     };
 
-    const subdivision=Math.max(32,Math.min(128,Math.round(longEdge/4)));
+    const subdivision=Math.max(32,Math.min(64,Math.round(longEdge/8)));
     const outPositions=[], outUvs=[], outIndices=[], cache=new Map(), outGroups=[];
     const addVertex=(x,y,z,u,v,materialIndex)=>{
         const key=materialIndex+':'+[x,y,z,u,v].map(n=>Math.round(n*1e7)).join(':');
@@ -7338,6 +7339,7 @@ document.getElementById('btn-build-image-relief-direct').addEventListener('click
     const button=document.getElementById('btn-build-image-relief-direct');
     const status=document.getElementById('relief-status');
     if(!stellaMesh||!reliefSourceImage){status.textContent='Сначала создай стелу и выбери изображение.';return;}
+    if(reliefModeInput.value==='ornament'){status.textContent='Прямой тестовый метод пока предназначен только для фото и grayscale-карт. Для орнамента используй обычный режим.';return;}
     if(selectedAssemblyTarget && selectedAssemblyTarget!==stellaMesh){status.textContent='Эксперимент пока работает только с основной стелой.';return;}
     button.disabled=true;
     const started=performance.now();
