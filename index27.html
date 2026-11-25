@@ -6689,7 +6689,7 @@ reliefFileInput.addEventListener('change', event => {
 function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPercent, blur, invert, resolution, placement = {}) {
     const maxWidth = stoneBox.max.x - stoneBox.min.x;
     const maxHeight = stoneBox.max.y - stoneBox.min.y;
-    if (!(maxWidth > 0 && maxHeight > 0)) throw new Error('Не удалось определить размеры лицевой поверхности стелы.');
+    if (!(maxWidth > 0 && maxHeight > 0)) throw new Error('Не удалось определить размеры лицевой поверхности.');
     const aspect = image.naturalWidth / image.naturalHeight;
     const fitWidth = maxWidth * widthPercent / 100;
     const fitHeight = maxHeight * 0.68;
@@ -6701,27 +6701,26 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
     const side = placement.side === 'back' ? 'back' : 'front';
     if (!(width > 0 && height > 0)) throw new Error('Некорректные размеры изображения.');
 
-    // Ограничиваем сетку для стабильной работы CSG: базово 384, максимум 640.
+    // Сетка задаёт только исходные отсчёты высоты. Граница объекта строится
+    // интерполяцией изолиний, а не выбором целых пиксельных ячеек.
     const longEdge = Math.max(128, Math.min(640, Math.round(resolution || 384)));
     const nx = Math.max(64, Math.round(aspect >= 1 ? longEdge : longEdge * aspect));
     const ny = Math.max(64, Math.round(aspect >= 1 ? longEdge / aspect : longEdge));
     const canvas = document.createElement('canvas');
-    canvas.width = nx; canvas.height = ny;
+    canvas.width = nx + 1; canvas.height = ny + 1;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    ctx.clearRect(0, 0, nx, ny);
+    ctx.clearRect(0, 0, nx + 1, ny + 1);
     ctx.filter = blur > 0 ? 'blur(' + blur + 'px)' : 'none';
-    ctx.drawImage(image, 0, 0, nx, ny);
+    ctx.drawImage(image, 0, 0, nx + 1, ny + 1);
     ctx.filter = 'none';
-    const pixels = ctx.getImageData(0, 0, nx, ny).data;
-
-    // Определяем цвет фона по четырём углам. Для PNG/WebP также учитываем прозрачность.
+    const pixels = ctx.getImageData(0, 0, nx + 1, ny + 1).data;
+    const stride = nx + 1;
     const cornerSamples = [];
     const sampleCorner = (cx, cy) => {
         let rr = 0, gg = 0, bb = 0, n = 0;
         for (let yy = 0; yy < 8; yy++) for (let xx = 0; xx < 8; xx++) {
-            const x = Math.min(nx - 1, Math.max(0, cx ? nx - 1 - xx : xx));
-            const y = Math.min(ny - 1, Math.max(0, cy ? ny - 1 - yy : yy));
-            const p = (y * nx + x) * 4;
+            const x = cx ? nx - xx : xx, y = cy ? ny - yy : yy;
+            const p = (y * stride + x) * 4;
             if (pixels[p + 3] > 200) { rr += pixels[p]; gg += pixels[p + 1]; bb += pixels[p + 2]; n++; }
         }
         if (n) cornerSamples.push([rr / n, gg / n, bb / n]);
@@ -6729,18 +6728,21 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
     sampleCorner(0, 0); sampleCorner(1, 0); sampleCorner(0, 1); sampleCorner(1, 1);
     const bg = [0, 1, 2].map(k => cornerSamples.length
         ? cornerSamples.reduce((sum, c) => sum + c[k], 0) / cornerSamples.length : 255);
-    const mask = new Uint8Array(nx * ny);
-    let activePixels = 0;
-    for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) {
-        const p = (y * nx + x) * 4;
-        const alpha = pixels[p + 3];
+    const scalar = new Float32Array(stride * (ny + 1));
+    const grayValues = new Float32Array(scalar.length);
+    let maxMask = 0;
+    for (let y = 0; y <= ny; y++) for (let x = 0; x <= nx; x++) {
+        const i = y * stride + x, p = i * 4;
+        const alpha = pixels[p + 3] / 255;
         const dr = pixels[p] - bg[0], dg = pixels[p + 1] - bg[1], db = pixels[p + 2] - bg[2];
-        const colorDistance = Math.sqrt(dr * dr + dg * dg + db * db);
-        // Оставляем только объект: прозрачность работает для PNG/WebP, цвет углов — для JPG.
-        const keep = alpha > 12 && (alpha < 245 || colorDistance > 38);
-        if (keep) { mask[y * nx + x] = 1; activePixels++; }
+        const distance = Math.sqrt(dr * dr + dg * dg + db * db);
+        // На изображениях с прозрачностью контур задаёт alpha; на JPG — отличие от фона.
+        scalar[i] = pixels[p + 3] < 250 ? alpha : Math.min(1, distance / 38);
+        grayValues[i] = (0.2126 * pixels[p] + 0.7152 * pixels[p + 1] + 0.0722 * pixels[p + 2]) / 255;
+        if (scalar[i] > maxMask) maxMask = scalar[i];
     }
-    if (!activePixels) throw new Error('Объект не найден: фон занимает всё изображение. Попробуй изображение с более контрастным фоном.');
+    const threshold = 0.12;
+    if (maxMask <= threshold) throw new Error('Объект не найден: фон занимает всё изображение. Попробуй изображение с более контрастным фоном.');
 
     const faceZ = side === 'back' ? stoneBox.min.z : stoneBox.max.z;
     const cutterTopZ = faceZ + (side === 'back' ? -1 : 1) * Math.max(0.001, depthMeters * 0.15);
@@ -6749,81 +6751,84 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
         return { x: centerX + dx * Math.cos(rotation) - dy * Math.sin(rotation),
                  y: centerY + dx * Math.sin(rotation) + dy * Math.cos(rotation) };
     };
-    const count = (nx + 1) * (ny + 1);
-    const positions = new Float32Array(count * 2 * 3);
-    const uvs = new Float32Array(count * 2 * 2);
-    const bottomDepths = new Float32Array(count);
-
-    for (let row = 0; row <= ny; row++) {
-        for (let col = 0; col <= nx; col++) {
-            const i = row * (nx + 1) + col;
-            const px = Math.min(nx - 1, col), py = Math.min(ny - 1, row);
-            const p = (py * nx + px) * 4;
-            const alpha = pixels[p + 3] / 255;
-            const gray = (0.2126 * pixels[p] + 0.7152 * pixels[p + 1] + 0.0722 * pixels[p + 2]) / 255;
-            const level = (invert ? 1 - gray : gray) * alpha;
-            bottomDepths[i] = 0.00015 + Math.max(0, level) * depthMeters;
-            const point = rotatePoint(centerX + width * (col / nx - 0.5), centerY + height * (0.5 - row / ny));
-            const x = point.x, y = point.y;
-            const base = i * 3;
-            positions[base] = x; positions[base + 1] = y; positions[base + 2] = cutterTopZ;
-            positions[(count + i) * 3] = x;
-            positions[(count + i) * 3 + 1] = y;
-            positions[(count + i) * 3 + 2] = faceZ + (side === 'back' ? 1 : -1) * bottomDepths[i];
-            uvs[i * 2] = uvs[(count + i) * 2] = col / nx;
-            uvs[i * 2 + 1] = uvs[(count + i) * 2 + 1] = 1 - row / ny;
-        }
-    }
-
-    // First count active cells and contour edges. Preallocating the index buffer
-    // avoids millions of dynamic Array.push operations at high image resolutions.
-    const isOn = (row, col) => row >= 0 && row < ny && col >= 0 && col < nx && mask[row * nx + col] === 1;
-    let activeCells = 0;
-    let boundaryEdges = 0;
-    for (let row = 0; row < ny; row++) {
-        for (let col = 0; col < nx; col++) {
-            if (!isOn(row, col)) continue;
-            activeCells++;
-            if (!isOn(row - 1, col)) boundaryEdges++;
-            if (!isOn(row + 1, col)) boundaryEdges++;
-            if (!isOn(row, col - 1)) boundaryEdges++;
-            if (!isOn(row, col + 1)) boundaryEdges++;
-        }
-    }
-    if (!activeCells) throw new Error('Объект не найден после обработки фона.');
-    const indices = new Uint32Array(activeCells * 12 + boundaryEdges * 6);
-    let indexOffset = 0;
-    const addWall = (i, j) => {
-        const ti = i, tj = j, bi = count + i, bj = count + j;
-        indices[indexOffset++] = ti; indices[indexOffset++] = bi; indices[indexOffset++] = tj;
-        indices[indexOffset++] = tj; indices[indexOffset++] = bi; indices[indexOffset++] = bj;
+    const vertexAt = (gx, gy, value, gray) => {
+        const px = gx / nx, py = gy / ny;
+        const point = rotatePoint(centerX + width * (px - 0.5), centerY + height * (0.5 - py));
+        const level = (invert ? 1 - gray : gray);
+        const bottomDepth = 0.00015 + Math.max(0, level) * depthMeters;
+        return { x: point.x, y: point.y, s: value, gray, depth: bottomDepth, u: px, v: 1 - py, gx, gy };
     };
-    for (let row = 0; row < ny; row++) {
-        for (let col = 0; col < nx; col++) {
-            if (!isOn(row, col)) continue;
-            const a = row * (nx + 1) + col;
-            const b = a + 1, d = a + nx + 1, c = d + 1;
-            const A = count + a, B = count + b, C = count + c, D = count + d;
-            // Верхняя крышка и нижняя рельефная поверхность.
-            indices[indexOffset++] = a; indices[indexOffset++] = d; indices[indexOffset++] = b;
-            indices[indexOffset++] = b; indices[indexOffset++] = d; indices[indexOffset++] = c;
-            indices[indexOffset++] = A; indices[indexOffset++] = B; indices[indexOffset++] = D;
-            indices[indexOffset++] = B; indices[indexOffset++] = C; indices[indexOffset++] = D;
-            if (!isOn(row - 1, col)) addWall(a, b);
-            if (!isOn(row + 1, col)) addWall(c, d);
-            if (!isOn(row, col - 1)) addWall(d, a);
-            if (!isOn(row, col + 1)) addWall(b, c);
+    const interpolate = (a, b) => {
+        const den = b.s - a.s;
+        const t = Math.max(0, Math.min(1, Math.abs(den) < 1e-9 ? 0.5 : (threshold - a.s) / den));
+        return {
+            x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t,
+            s: threshold, gray: a.gray + (b.gray - a.gray) * t,
+            depth: a.depth + (b.depth - a.depth) * t,
+            u: a.u + (b.u - a.u) * t, v: a.v + (b.v - a.v) * t,
+            gx: a.gx + (b.gx - a.gx) * t, gy: a.gy + (b.gy - a.gy) * t
+        };
+    };
+    const positions = [], uvs = [], indices = [];
+    const addVertex = (v, isBottom) => {
+        positions.push(v.x, v.y, isBottom
+            ? faceZ + (side === 'back' ? 1 : -1) * v.depth
+            : cutterTopZ);
+        uvs.push(v.u, v.v);
+        return positions.length / 3 - 1;
+    };
+    const isBoundaryEdge = (a, b) => {
+        const onContour = Math.abs(a.s - threshold) < 1e-5 && Math.abs(b.s - threshold) < 1e-5;
+        const onOuter = (Math.abs(a.gx) < 1e-5 && Math.abs(b.gx) < 1e-5) ||
+            (Math.abs(a.gx - nx) < 1e-5 && Math.abs(b.gx - nx) < 1e-5) ||
+            (Math.abs(a.gy) < 1e-5 && Math.abs(b.gy) < 1e-5) ||
+            (Math.abs(a.gy - ny) < 1e-5 && Math.abs(b.gy - ny) < 1e-5);
+        return onContour || onOuter;
+    };
+    const emitClippedTriangle = (triangle) => {
+        let poly = triangle;
+        const output = [];
+        for (let i = 0; i < poly.length; i++) {
+            const a = poly[i], b = poly[(i + 1) % poly.length];
+            const ina = a.s >= threshold, inb = b.s >= threshold;
+            if (ina && inb) output.push(b);
+            else if (ina && !inb) output.push(interpolate(a, b));
+            else if (!ina && inb) { output.push(interpolate(a, b)); output.push(b); }
         }
+        if (output.length < 3) return;
+        const top = output.map(v => addVertex(v, false));
+        const bottom = output.map(v => addVertex(v, true));
+        for (let i = 1; i < output.length - 1; i++) {
+            indices.push(top[0], top[i], top[i + 1]);
+            indices.push(bottom[0], bottom[i + 1], bottom[i]);
+        }
+        for (let i = 0; i < output.length; i++) {
+            const j = (i + 1) % output.length;
+            if (!isBoundaryEdge(output[i], output[j])) continue;
+            indices.push(top[i], bottom[i], top[j], top[j], bottom[i], bottom[j]);
+        }
+    };
+    for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) {
+        const at = (gx, gy) => {
+            const i = gy * stride + gx;
+            return vertexAt(gx, gy, scalar[i], grayValues[i]);
+        };
+        const a = at(x, y), b = at(x + 1, y), c = at(x + 1, y + 1), d = at(x, y + 1);
+        emitClippedTriangle([a, d, b]);
+        emitClippedTriangle([b, d, c]);
     }
-    const compactIndices = indexOffset === indices.length ? indices : indices.slice(0, indexOffset);
+    if (!indices.length) throw new Error('Не удалось построить поверхность рельефа.');
+    const compactPositions = new Float32Array(positions);
+    const compactUvs = new Float32Array(uvs);
+    const compactIndices = new Uint32Array(indices);
     if (side === 'back') {
         for (let i = 0; i < compactIndices.length; i += 3) {
             const swap = compactIndices[i + 1]; compactIndices[i + 1] = compactIndices[i + 2]; compactIndices[i + 2] = swap;
         }
     }
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    geometry.setAttribute('position', new THREE.BufferAttribute(compactPositions, 3));
+    geometry.setAttribute('uv', new THREE.BufferAttribute(compactUvs, 2));
     geometry.setIndex(new THREE.BufferAttribute(compactIndices, 1));
     geometry.addGroup(0, compactIndices.length, 0);
     geometry.computeVertexNormals();
@@ -6831,7 +6836,6 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
     geometry.computeBoundingSphere();
     return geometry;
 }
-
 function removeImageRelief() {
     const removeButton = document.getElementById('btn-remove-image-relief');
     // The relief is part of the stone geometry. Restore the saved pre-relief
