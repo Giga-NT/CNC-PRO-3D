@@ -463,7 +463,7 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
 
     <div class="control-group" id="image-relief-module">
         <h3>🗿 Рельеф по изображению</h3>
-        <div class="draw-instructions">Загрузи рисунок или фотографию. Программа построит настоящую объёмную геометрию рельефа на лицевой стороне стелы — это не текстура.</div>
+        <div class="draw-instructions">Загрузи рисунок или фотографию. Программа вырежет объёмный рельеф непосредственно в камне: без декали и отдельной накладки. После операции можно отменить изменение кнопкой «Отменить».</div>
         <label style="display:block;margin:7px 0;">Изображение (PNG, JPG, WebP)
             <input type="file" id="relief-image-file" accept="image/png,image/jpeg,image/webp" style="width:100%;margin-top:5px;">
         </label>
@@ -475,8 +475,8 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
                 <option value="darkgray">Тёмно-серый матовый камень</option>
             </select>
         </label>
-        <label>Детализация сетки: <span class="val" id="relief-resolution-value">384</span>
-            <input type="range" id="relief-resolution" min="128" max="512" step="32" value="384">
+        <label>Детализация сетки: <span class="val" id="relief-resolution-value">512</span>
+            <input type="range" id="relief-resolution" min="128" max="640" step="32" value="512">
         </label>
         <label>Глубина рельефа: <span class="val" id="relief-depth-value">8</span> мм
             <input type="range" id="relief-depth" min="1" max="30" step="1" value="8">
@@ -6618,7 +6618,7 @@ function removeImageRelief() {
     document.getElementById('relief-status').textContent = 'Рельеф удалён.';
 }
 
-function buildImageReliefGeometry(image, stoneBox, depthMeters, widthPercent, blur, invert, resolution) {
+function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPercent, blur, invert, resolution) {
     const maxWidth = stoneBox.max.x - stoneBox.min.x;
     const maxHeight = stoneBox.max.y - stoneBox.min.y;
     if (!(maxWidth > 0 && maxHeight > 0)) throw new Error('Не удалось определить размеры лицевой поверхности стелы.');
@@ -6629,9 +6629,8 @@ function buildImageReliefGeometry(image, stoneBox, depthMeters, widthPercent, bl
     const height = width / aspect;
     if (!(width > 0 && height > 0)) throw new Error('Некорректные размеры изображения.');
 
-    // Resolution is applied to the longest image edge, preserving its aspect ratio.
-    // A denser height field retains facial features and smaller carved details.
-    const longEdge = Math.max(128, Math.min(512, Math.round(resolution || 384)));
+    // Higher sampling improves the carved floor itself, not a detached overlay.
+    const longEdge = Math.max(128, Math.min(640, Math.round(resolution || 512)));
     const nx = Math.max(64, Math.round(aspect >= 1 ? longEdge : longEdge * aspect));
     const ny = Math.max(64, Math.round(aspect >= 1 ? longEdge / aspect : longEdge));
     const canvas = document.createElement('canvas');
@@ -6642,93 +6641,128 @@ function buildImageReliefGeometry(image, stoneBox, depthMeters, widthPercent, bl
     ctx.drawImage(image, 0, 0, nx, ny);
     ctx.filter = 'none';
     const pixels = ctx.getImageData(0, 0, nx, ny).data;
+
     const x0 = (stoneBox.min.x + stoneBox.max.x - width) / 2;
     const y0 = (stoneBox.min.y + stoneBox.max.y - height) / 2;
-    const baseZ = stoneBox.max.z + 0.0005;
-    const top = new Array((nx + 1) * (ny + 1));
-    const positions = [];
+    const faceZ = stoneBox.max.z;
+    const cutterTopZ = faceZ + Math.max(0.001, depthMeters * 0.15);
+    const count = (nx + 1) * (ny + 1);
+    const positions = new Float32Array(count * 2 * 3);
+    const uvs = new Float32Array(count * 2 * 2);
+    const indices = [];
+    const bottomDepths = new Float32Array(count);
 
     for (let row = 0; row <= ny; row++) {
         for (let col = 0; col <= nx; col++) {
-            const sx = Math.min(nx - 1, col), sy = Math.min(ny - 1, row);
-            const p = (sy * nx + sx) * 4;
+            const i = row * (nx + 1) + col;
+            const px = Math.min(nx - 1, col), py = Math.min(ny - 1, row);
+            const p = (py * nx + px) * 4;
             const alpha = pixels[p + 3] / 255;
             const gray = (0.2126 * pixels[p] + 0.7152 * pixels[p + 1] + 0.0722 * pixels[p + 2]) / 255;
             const level = (invert ? 1 - gray : gray) * alpha;
-            top[row * (nx + 1) + col] = [
-                x0 + width * col / nx,
-                y0 + height * (1 - row / ny),
-                baseZ + Math.max(0, level) * depthMeters
-            ];
+            // A tiny minimum engagement prevents a zero-depth, disconnected cutter floor.
+            bottomDepths[i] = 0.00015 + Math.max(0, level) * depthMeters;
+            const x = x0 + width * col / nx;
+            const y = y0 + height * (1 - row / ny);
+            const base = i * 3;
+            positions[base] = x; positions[base + 1] = y; positions[base + 2] = cutterTopZ;
+            positions[(count + i) * 3] = x;
+            positions[(count + i) * 3 + 1] = y;
+            positions[(count + i) * 3 + 2] = faceZ - bottomDepths[i];
+            uvs[i * 2] = uvs[(count + i) * 2] = col / nx;
+            uvs[i * 2 + 1] = uvs[(count + i) * 2 + 1] = 1 - row / ny;
         }
     }
-    const tri = (a, b, c) => positions.push(...a, ...b, ...c);
+
+    // Flat upper cap closes the cutter above the stone surface.
     for (let row = 0; row < ny; row++) {
         for (let col = 0; col < nx; col++) {
-            const a = top[row * (nx + 1) + col];
-            const b = top[row * (nx + 1) + col + 1];
-            const c = top[(row + 1) * (nx + 1) + col + 1];
-            const d = top[(row + 1) * (nx + 1) + col];
-            tri(a, d, b); tri(b, d, c);
+            const a = row * (nx + 1) + col;
+            const b = a + 1, d = a + nx + 1, c = d + 1;
+            indices.push(a, d, b, b, d, c);
+            const A = count + a, B = count + b, C = count + c, D = count + d;
+            // Variable lower cap is oppositely oriented.
+            indices.push(A, B, D, B, C, D);
         }
     }
-    const bottomZ = baseZ - 0.0005;
-    const bl = [x0, y0, bottomZ], br = [x0 + width, y0, bottomZ];
-    const tr = [x0 + width, y0 + height, bottomZ], tl = [x0, y0 + height, bottomZ];
-    tri(bl, br, tr); tri(bl, tr, tl);
-    const addWall = (p1, p2) => {
-        const q1 = [p1[0], p1[1], bottomZ], q2 = [p2[0], p2[1], bottomZ];
-        tri(p1, q1, p2); tri(p2, q1, q2);
+
+    // Close all four perimeter walls so the cutter is a watertight solid.
+    const addWall = (i, j) => {
+        const ti = i, tj = j, bi = count + i, bj = count + j;
+        indices.push(ti, bi, tj, tj, bi, bj);
     };
     for (let col = 0; col < nx; col++) {
-        addWall(top[col], top[col + 1]);
-        addWall(top[ny * (nx + 1) + col + 1], top[ny * (nx + 1) + col]);
+        addWall(col, col + 1);
+        addWall(ny * (nx + 1) + col + 1, ny * (nx + 1) + col);
     }
     for (let row = 0; row < ny; row++) {
-        addWall(top[(row + 1) * (nx + 1)], top[row * (nx + 1)]);
-        addWall(top[row * (nx + 1) + nx], top[(row + 1) * (nx + 1) + nx]);
+        addWall((row + 1) * (nx + 1), row * (nx + 1));
+        addWall(row * (nx + 1) + nx, (row + 1) * (nx + 1) + nx);
     }
+
     const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    geometry.setIndex(indices);
+    geometry.addGroup(0, indices.length, 0);
     geometry.computeVertexNormals();
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
     return geometry;
 }
 
-document.getElementById('btn-build-image-relief').addEventListener('click', () => {
+function removeImageRelief() {
+    // The image is now carved into stellaMesh itself. Undo restores the previous solid.
+    if (imageReliefMesh) {
+        if (imageReliefMesh.parent) imageReliefMesh.parent.remove(imageReliefMesh);
+        if (imageReliefMesh.geometry) imageReliefMesh.geometry.dispose();
+        if (imageReliefMesh.material) imageReliefMesh.material.dispose();
+        imageReliefMesh = null;
+    }
+    document.getElementById('btn-remove-image-relief').disabled = true;
+}
+
+document.getElementById('btn-build-image-relief').addEventListener('click', async () => {
     if (!stellaMesh) return document.getElementById('relief-status').textContent = 'Сначала создай стелу.';
     if (!reliefSourceImage) return document.getElementById('relief-status').textContent = 'Сначала выбери изображение.';
+    if (!csgAvailable) return document.getElementById('relief-status').textContent = 'Булев модуль не загружен — вырезание в камне недоступно.';
+    const buildButton = document.getElementById('btn-build-image-relief');
+    buildButton.disabled = true;
     try {
         stellaMesh.geometry.computeBoundingBox();
-        const geometry = buildImageReliefGeometry(
+        const geometry = buildImageReliefCutterGeometry(
             reliefSourceImage, stellaMesh.geometry.boundingBox,
             Number(reliefDepthInput.value) / 1000,
             Number(reliefSizeInput.value), Number(reliefBlurInput.value),
             reliefInvertInput.checked, Number(reliefResolutionInput.value)
         );
-        removeImageRelief();
-        // The relief is a separately selectable matte carved-stone surface,
-        // not a copy of the monument's polished/granite material.
-        const material = new THREE.MeshStandardMaterial({
-            color: RELIEF_MATERIAL_COLORS[reliefMaterialInput.value] || RELIEF_MATERIAL_COLORS.white,
-            roughness: 0.96,
-            metalness: 0,
-            flatShading: false
-        });
-        imageReliefMesh = new THREE.Mesh(geometry, material);
-        imageReliefMesh.name = 'Рельеф по изображению: ' + reliefSourceName;
-        imageReliefMesh.userData.isImageRelief = true;
-        imageReliefMesh.castShadow = true;
-        imageReliefMesh.receiveShadow = true;
-        stellaMesh.add(imageReliefMesh);
-        document.getElementById('btn-remove-image-relief').disabled = false;
+        const cutter = new Brush(geometry);
+        cutter.material = getCSGMaterials();
+        cutter.position.copy(stellaMesh.position);
+        cutter.quaternion.copy(stellaMesh.quaternion);
+        cutter.scale.copy(stellaMesh.scale);
+        cutter.updateMatrixWorld(true);
+
+        const vertices = geometry.getAttribute('position').count;
         document.getElementById('relief-status').textContent =
-            'Создана 3D-геометрия: ' + geometry.getAttribute('position').count.toLocaleString('ru-RU') + ' вершин. Рельеф включён в STL/GLB экспорт стелы.';
-        setStatus('Создан 3D-рельеф по изображению.');
+            'Подготовлен режущий объём (' + vertices.toLocaleString('ru-RU') +
+            ' вершин). Выполняется вычитание из тела стелы…';
+        const ok = await runCSG([cutter], 'Рельеф по изображению', () => {
+            imageReliefMesh = null;
+            document.getElementById('btn-remove-image-relief').disabled = true;
+            document.getElementById('relief-status').textContent =
+                'Изображение вырезано непосредственно в геометрии стелы. Это единая изменённая модель для STL/GLB.';
+            setStatus('Рельеф выфрезерован в поверхности стелы.');
+        }, SUBTRACTION);
+        if (!ok) {
+            document.getElementById('relief-status').textContent =
+                'Не удалось выполнить вычитание. Проверь пересечение с лицевой поверхностью и доступность памяти.';
+        }
     } catch (error) {
         log('Рельеф по изображению: ' + error.message);
         document.getElementById('relief-status').textContent = 'Ошибка построения: ' + error.message;
+    } finally {
+        buildButton.disabled = false;
     }
 });
 document.getElementById('btn-remove-image-relief').addEventListener('click', removeImageRelief);
