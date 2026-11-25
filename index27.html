@@ -1340,6 +1340,31 @@ evaluator.useGroups = true;
 evaluator.consolidateGroups = false;
 evaluator.removeUnusedMaterials = false;
 
+// Диагностика производительности CSG. Только чтение геометрии и замеры времени.
+function getCSGPerfGeometryStats(geometry) {
+    if (!geometry) return null;
+    const position = geometry.getAttribute('position');
+    const index = geometry.getIndex();
+    const vertices = position ? position.count : 0;
+    const indices = index ? index.count : 0;
+    return {
+        vertices,
+        indices: index ? indices : null,
+        triangles: Math.floor((index ? indices : vertices) / 3),
+        groups: (geometry.groups || []).length,
+        indexed: !!index
+    };
+}
+
+function logCSGPerfGeometry(label, geometry) {
+    const stats = getCSGPerfGeometryStats(geometry);
+    if (!stats) {
+        console.log('[CSG PERF] ' + label + ': geometry отсутствует');
+        return;
+    }
+    console.log('[CSG PERF] ' + label + ': ' + JSON.stringify(stats));
+}
+
 function ensureCSGUV(geometry) {
     // three-bvh-csg requires UV on every brush, including cutters.
     // Keep existing UVs (stone mapping) and generate planar XY UVs only when absent.
@@ -1446,10 +1471,12 @@ function popUndoState() {
     document.getElementById('btn-undo').disabled = undoStack.length === 0;
 }
 
-function createStellaBrush() {
+function createStellaBrush(perfTimes = null) {
     // normalizeForCSG сам создаёт рабочую геометрию (clone/toNonIndexed);
     // предварительный clone и повторный computeVertexNormals были лишними.
+    const normalizeStartedAt = performance.now();
     const geometry = normalizeForCSG(stellaMesh.geometry, 0, true);
+    if (perfTimes) perfTimes.normalizeForCSG = performance.now() - normalizeStartedAt;
 
     const brush = new Brush(geometry);
     brush.material = getCSGMaterials();
@@ -4906,12 +4933,14 @@ function getAssemblyCSGMaterials(mesh) {
     return [...preserved, getRoughMaterial(params.material)];
 }
 
-function createAssemblyTargetBrush(mesh, csgMaterials = getAssemblyCSGMaterials(mesh), worldMatrix = null) {
+function createAssemblyTargetBrush(mesh, csgMaterials = getAssemblyCSGMaterials(mesh), worldMatrix = null, perfTimes = null) {
     mesh.updateWorldMatrix(true, false);
     // Use one immutable transform snapshot for both baking into world space
     // and converting the CSG result back to mesh-local coordinates.
     const sourceWorldMatrix = worldMatrix || mesh.matrixWorld.clone();
+    const normalizeStartedAt = performance.now();
     const geometry = normalizeForCSG(mesh.geometry, 0, true);
+    if (perfTimes) perfTimes.normalizeForCSG = performance.now() - normalizeStartedAt;
     geometry.applyMatrix4(sourceWorldMatrix);
     const brush = new Brush(geometry);
     brush.material = csgMaterials;
@@ -4922,7 +4951,14 @@ function createAssemblyTargetBrush(mesh, csgMaterials = getAssemblyCSGMaterials(
     return brush;
 }
 
-async function runCSG(cutters, label, onSuccess, operation = null) {
+async function runCSG(cutters, label, onSuccess, operation = null, perfContext = null) {
+    const perfEnabled = !!perfContext;
+    const perfStartedAt = perfEnabled && Number.isFinite(perfContext.startedAt)
+        ? perfContext.startedAt : performance.now();
+    const perfTimes = {};
+    const perfNow = () => performance.now();
+    const logPerfTime = (name, value) => console.log('[CSG PERF] ' + name + ': ' + value.toFixed(1) + ' ms');
+    const logPerfTotal = () => logPerfTime('TOTAL', perfNow() - perfStartedAt);
     const selectedItem = selectedAssemblyTarget
         ? assemblyItems.find(item => item.root === selectedAssemblyTarget)
         : null;
@@ -4943,6 +4979,13 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
     showLoading(true, 'Подготовка вырезания…');
     await new Promise(resolve => requestAnimationFrame(() => resolve()));
 
+    if (perfEnabled) {
+        logPerfTime('relief cutter build', perfContext.cutterBuildMs || 0);
+        logCSGPerfGeometry('Stella source', targetMesh.geometry);
+        cutters.forEach((c, i) => logCSGPerfGeometry('Cutter ' + (i + 1), c.geometry));
+    }
+
+    const undoStartedAt = perfNow();
     if (isAssemblyTarget) {
         assemblyUndoStack.push({ mesh: targetMesh, geometry: targetMesh.geometry.clone(), material: targetMesh.material });
         if (assemblyUndoStack.length > 10) {
@@ -4951,6 +4994,10 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
         }
     } else {
         pushUndo();
+    }
+    if (perfEnabled) {
+        perfTimes.pushUndo = perfNow() - undoStartedAt;
+        logPerfTime('pushUndo', perfTimes.pushUndo);
     }
     document.getElementById('btn-undo').disabled = false;
 
@@ -4963,10 +5010,17 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
             targetMesh.updateWorldMatrix(true, false);
             assemblyTargetWorldMatrix = targetMesh.matrixWorld.clone();
         }
+        const brushStartedAt = perfNow();
         brush = isAssemblyTarget
-            ? createAssemblyTargetBrush(targetMesh, importedCSGMaterials, assemblyTargetWorldMatrix)
-            : createStellaBrush();
+            ? createAssemblyTargetBrush(targetMesh, importedCSGMaterials, assemblyTargetWorldMatrix, perfEnabled ? perfTimes : null)
+            : createStellaBrush(perfEnabled ? perfTimes : null);
         brush.updateMatrixWorld(true);
+        if (perfEnabled) {
+            perfTimes.createBrush = perfNow() - brushStartedAt;
+            logPerfTime('normalizeForCSG', perfTimes.normalizeForCSG || 0);
+            logPerfTime('createStellaBrush', perfTimes.createBrush);
+            logCSGPerfGeometry('Target brush', brush.geometry);
+        }
         const targetBounds = new THREE.Box3().setFromObject(brush);
         const cutterBounds = cutters.map(c => {
             c.updateMatrixWorld(true);
@@ -4991,9 +5045,14 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
                 popUndoState();
             }
             document.getElementById('btn-undo').disabled = assemblyUndoStack.length === 0 && undoStack.length === 0;
+            if (perfEnabled) logPerfTotal();
             return false;
         }
         let success = 0;
+        if (perfEnabled) {
+            perfTimes.evaluate = 0;
+            logPerfTime('bounds and validation', perfNow() - brushStartedAt - perfTimes.createBrush);
+        }
 
         setStatus('⏳ Выполнение CSG: ' + cutters.length + ' операция(й)…');
         cutters.forEach((c, idx) => {
@@ -5018,7 +5077,13 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
                     }
                 }
                 const beforeCount = brush.geometry.getAttribute('position').count;
+                const evaluateStartedAt = perfNow();
                 const nextBrush = evaluator.evaluate(brush, c, op);
+                const evaluateMs = perfNow() - evaluateStartedAt;
+                if (perfEnabled) {
+                    perfTimes.evaluate += evaluateMs;
+                    logPerfTime('evaluator.evaluate #' + (idx + 1), evaluateMs);
+                }
                 const afterCount = nextBrush.geometry.getAttribute('position')?.count || 0;
                 log('[CSG DIAG] operation=' + (op === SUBTRACTION ? 'SUBTRACTION' : op === ADDITION ? 'ADDITION' : 'INTERSECTION') +
                     ', vertices=' + beforeCount + ' -> ' + afterCount);
@@ -5047,7 +5112,9 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
         });
 
         if (!success) throw new Error('Ни одна CSG-операция не выполнена');
+        const postprocessStartedAt = perfNow();
         const finalGeometry = brush.geometry;
+        if (perfEnabled) logCSGPerfGeometry('CSG result before assignment', finalGeometry);
         brush.geometry = null;
         const pos = finalGeometry.getAttribute('position');
         if (!pos || pos.count < 12) {
@@ -5112,6 +5179,11 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
         clearCutPreview();
         if (onSuccess) onSuccess(success);
         showLoading(false);
+        if (perfEnabled) {
+            perfTimes.postprocess = perfNow() - postprocessStartedAt;
+            logPerfTime('postprocess', perfTimes.postprocess);
+            logPerfTotal();
+        }
         return true;
     } catch (e) {
         if (brush) disposeCSGBrush(brush);
@@ -5129,6 +5201,10 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
         cutters.forEach(disposeCSGBrush);
         log('CSG ошибка: ' + e.message);
         console.error(e);
+        if (perfEnabled) {
+            logPerfTime('failed operation elapsed', perfNow() - perfStartedAt);
+            logPerfTotal();
+        }
         setStatus('❌ ' + e.message);
         showLoading(false);
         return false;
@@ -6964,13 +7040,18 @@ document.getElementById('btn-build-image-relief').addEventListener('click', asyn
     buildButton.disabled = true;
     removeButton.disabled = true;
     try {
+        const reliefPerfStartedAt = performance.now();
         stellaMesh.geometry.computeBoundingBox();
+        const cutterBuildStartedAt = performance.now();
         const geometry = buildImageReliefCutterGeometry(
             reliefSourceImage, stellaMesh.geometry.boundingBox,
             Number(reliefDepthInput.value) / 1000,
             Number(reliefSizeInput.value), Number(reliefBlurInput.value),
             reliefInvertInput.checked, Number(reliefResolutionInput.value), getImageReliefPlacement()
         );
+        const cutterBuildMs = performance.now() - cutterBuildStartedAt;
+        console.log('[CSG PERF] relief cutter build: ' + cutterBuildMs.toFixed(1) + ' ms');
+        logCSGPerfGeometry('Relief cutter geometry', geometry);
         const cutter = new Brush(geometry);
         cutter.material = getCSGMaterials();
         cutter.position.copy(stellaMesh.position);
@@ -6992,7 +7073,7 @@ document.getElementById('btn-build-image-relief').addEventListener('click', asyn
             document.getElementById('relief-status').textContent =
                 'Изображение вырезано непосредственно в геометрии стелы. Его можно удалить кнопкой «Удалить рельеф», пока не выполнены другие операции.';
             setStatus('Рельеф выфрезерован в поверхности стелы.');
-        }, SUBTRACTION);
+        }, SUBTRACTION, { startedAt: reliefPerfStartedAt, cutterBuildMs });
         if (!ok) {
             document.getElementById('relief-status').textContent =
                 'Не удалось выполнить вычитание. Проверь пересечение с лицевой поверхностью и доступность памяти.';
