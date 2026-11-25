@@ -6642,7 +6642,6 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
     const count = (nx + 1) * (ny + 1);
     const positions = new Float32Array(count * 2 * 3);
     const uvs = new Float32Array(count * 2 * 2);
-    const indices = [];
     const bottomDepths = new Float32Array(count);
 
     for (let row = 0; row <= ny; row++) {
@@ -6666,12 +6665,28 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
         }
     }
 
-    // Создаём замкнутый режущий объём только под пикселями самого объекта.
-    // Фоновые ячейки вообще не входят в геометрию cutter и не трогают камень.
+    // First count active cells and contour edges. Preallocating the index buffer
+    // avoids millions of dynamic Array.push operations at high image resolutions.
     const isOn = (row, col) => row >= 0 && row < ny && col >= 0 && col < nx && mask[row * nx + col] === 1;
+    let activeCells = 0;
+    let boundaryEdges = 0;
+    for (let row = 0; row < ny; row++) {
+        for (let col = 0; col < nx; col++) {
+            if (!isOn(row, col)) continue;
+            activeCells++;
+            if (!isOn(row - 1, col)) boundaryEdges++;
+            if (!isOn(row + 1, col)) boundaryEdges++;
+            if (!isOn(row, col - 1)) boundaryEdges++;
+            if (!isOn(row, col + 1)) boundaryEdges++;
+        }
+    }
+    if (!activeCells) throw new Error('Объект не найден после обработки фона.');
+    const indices = new Uint32Array(activeCells * 12 + boundaryEdges * 6);
+    let indexOffset = 0;
     const addWall = (i, j) => {
         const ti = i, tj = j, bi = count + i, bj = count + j;
-        indices.push(ti, bi, tj, tj, bi, bj);
+        indices[indexOffset++] = ti; indices[indexOffset++] = bi; indices[indexOffset++] = tj;
+        indices[indexOffset++] = tj; indices[indexOffset++] = bi; indices[indexOffset++] = bj;
     };
     for (let row = 0; row < ny; row++) {
         for (let col = 0; col < nx; col++) {
@@ -6680,20 +6695,22 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
             const b = a + 1, d = a + nx + 1, c = d + 1;
             const A = count + a, B = count + b, C = count + c, D = count + d;
             // Верхняя крышка и нижняя рельефная поверхность.
-            indices.push(a, d, b, b, d, c);
-            indices.push(A, B, D, B, C, D);
+            indices[indexOffset++] = a; indices[indexOffset++] = d; indices[indexOffset++] = b;
+            indices[indexOffset++] = b; indices[indexOffset++] = d; indices[indexOffset++] = c;
+            indices[indexOffset++] = A; indices[indexOffset++] = B; indices[indexOffset++] = D;
+            indices[indexOffset++] = B; indices[indexOffset++] = C; indices[indexOffset++] = D;
             if (!isOn(row - 1, col)) addWall(a, b);
             if (!isOn(row + 1, col)) addWall(c, d);
             if (!isOn(row, col - 1)) addWall(d, a);
             if (!isOn(row, col + 1)) addWall(b, c);
         }
     }
-
+    const compactIndices = indexOffset === indices.length ? indices : indices.slice(0, indexOffset);
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-    geometry.setIndex(indices);
-    geometry.addGroup(0, indices.length, 0);
+    geometry.setIndex(compactIndices);
+    geometry.addGroup(0, compactIndices.length, 0);
     geometry.computeVertexNormals();
     geometry.computeBoundingBox();
     geometry.computeBoundingSphere();
