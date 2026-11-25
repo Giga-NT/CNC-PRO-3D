@@ -1388,11 +1388,20 @@ function normalizeForCSG(geometry, materialIndex, preserveGroups = false) {
     for (const grp of savedGroups) {
         const start = wasIndexed ? grp.start * 3 : grp.start;
         const count = wasIndexed ? grp.count * 3 : grp.count;
-        if (start + count > total) continue;
+        // MeshBVH 0.7.0 crashes on empty BVH roots: countNodes() descends
+        // into missing children when a group contains zero triangles.
+        // CSG groups must contain complete triangles and stay inside the index range.
+        if (!Number.isFinite(start) || !Number.isFinite(count)) continue;
+        if (start < 0 || count < 3 || count % 3 !== 0 || start + count > total) continue;
         g.addGroup(start, count, Math.max(0, grp.materialIndex | 0));
     }
 
-    if (g.groups.length === 0) g.addGroup(0, total, 0);
+    // A malformed/empty source group list must never produce an empty BVH root.
+    if (g.groups.length === 0) {
+        const validTriangleCount = total - (total % 3);
+        if (validTriangleCount < 3) throw new Error('CSG: недостаточно треугольников для построения BVH');
+        g.addGroup(0, validTriangleCount, 0);
+    }
 
     return g;
 }
@@ -4977,6 +4986,17 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
                 if (!c.geometry.boundingSphere) c.geometry.computeBoundingSphere();
                 if (!brush.geometry.getAttribute('position') || !c.geometry.getAttribute('position')) {
                     throw new Error('CSG: отсутствует атрибут position у одной из геометрий');
+                }
+                // Validate BVH groups: no empty or partial-triangle ranges.
+                for (const [role, geometry] of [['target', brush.geometry], ['cutter', c.geometry]]) {
+                    const indexCount = geometry.index ? geometry.index.count : 0;
+                    const groups = geometry.groups || [];
+                    if (!indexCount || indexCount % 3 !== 0) {
+                        throw new Error('CSG: ' + role + ' имеет некорректное количество индексов (' + indexCount + ')');
+                    }
+                    if (!groups.length || groups.some(g => g.count < 3 || g.count % 3 !== 0 || g.start < 0 || g.start + g.count > indexCount)) {
+                        throw new Error('CSG: ' + role + ' содержит пустую или некорректную группу геометрии');
+                    }
                 }
                 const beforeCount = brush.geometry.getAttribute('position').count;
                 const nextBrush = evaluator.evaluate(brush, c, op);
