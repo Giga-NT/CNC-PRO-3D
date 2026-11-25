@@ -5012,6 +5012,11 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
                 console.error('[CSG GEOMETRY DIAG]', {
                     targetIndexCount: brush && brush.geometry && brush.geometry.index ? brush.geometry.index.count : null,
                     cutterIndexCount: c && c.geometry && c.geometry.index ? c.geometry.index.count : null,
+                    cutterIndexType: c && c.geometry && c.geometry.index ? c.geometry.index.constructor && c.geometry.index.constructor.name : null,
+                    cutterIndexIsBufferAttribute: !!(c && c.geometry && c.geometry.index && c.geometry.index.isBufferAttribute),
+                    cutterIndexArrayType: c && c.geometry && c.geometry.index && c.geometry.index.array ? c.geometry.index.array.constructor.name : null,
+                    cutterIndexArrayLength: c && c.geometry && c.geometry.index && c.geometry.index.array ? c.geometry.index.array.length : null,
+                    cutterIndexKeys: c && c.geometry && c.geometry.index ? Object.keys(c.geometry.index).slice(0, 12) : null,
                     targetPositionCount: brush && brush.geometry && brush.geometry.getAttribute('position') ? brush.geometry.getAttribute('position').count : null,
                     cutterPositionCount: c && c.geometry && c.geometry.getAttribute('position') ? c.geometry.getAttribute('position').count : null,
                     targetGroups: brush && brush.geometry ? brush.geometry.groups : null,
