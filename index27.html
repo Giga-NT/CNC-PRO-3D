@@ -469,7 +469,7 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
         </label>
         <div id="relief-image-name" class="import-status">Изображение не выбрано</div>
         <label>Детализация сетки: <span class="val" id="relief-resolution-value">768</span>
-            <input type="range" id="relief-resolution" min="128" max="1024" step="64" value="768">
+            <input type="range" id="relief-resolution" min="128" max="640" step="32" value="384">
         </label>
         <label>Глубина рельефа: <span class="val" id="relief-depth-value">8</span> мм
             <input type="range" id="relief-depth" min="1" max="30" step="1" value="8">
@@ -6594,8 +6594,8 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
     const height = width / aspect;
     if (!(width > 0 && height > 0)) throw new Error('Некорректные размеры изображения.');
 
-    // Более высокая детализация рельефа. 1024 — верхний предел из-за нагрузки CSG.
-    const longEdge = Math.max(128, Math.min(1024, Math.round(resolution || 768)));
+    // Ограничиваем сетку для стабильной работы CSG: базово 384, максимум 640.
+    const longEdge = Math.max(128, Math.min(640, Math.round(resolution || 384)));
     const nx = Math.max(64, Math.round(aspect >= 1 ? longEdge : longEdge * aspect));
     const ny = Math.max(64, Math.round(aspect >= 1 ? longEdge / aspect : longEdge));
     const canvas = document.createElement('canvas');
