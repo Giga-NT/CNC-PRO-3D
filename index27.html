@@ -7157,6 +7157,11 @@ function buildImageReliefDirectGeometry(sourceImage, sourceGeometry, depthMeters
         if(n) corners.push([r/n,g/n,b/n]);
     }
     const bg=[0,1,2].map(k=>corners.length?corners.reduce((v,c)=>v+c[k],0)/corners.length:255);
+    const backgroundTone=(0.2126*bg[0]+0.7152*bg[1]+0.0722*bg[2])/255;
+    const hasTransparency=(()=>{for(let i=3;i<pixels.length;i+=4)if(pixels[i]<250)return true;return false;})();
+    let opaqueToneSum=0,opaqueToneCount=0;
+    if(hasTransparency){for(let i=0;i<nx*ny;i++){const p=i*4;if(pixels[p+3]>200){opaqueToneSum+=(0.2126*pixels[p]+0.7152*pixels[p+1]+0.0722*pixels[p+2])/255;opaqueToneCount++;}}}
+    const autoInvert=hasTransparency?(opaqueToneCount?opaqueToneSum/opaqueToneCount<0.5:true):backgroundTone>0.5;
     const scalar = new Float32Array(nx*ny), gray = new Float32Array(nx*ny);
     for(let i=0;i<nx*ny;i++){
         const p=i*4, dr=pixels[p]-bg[0], dg=pixels[p+1]-bg[1], db=pixels[p+2]-bg[2];
@@ -7177,7 +7182,7 @@ function buildImageReliefDirectGeometry(sourceImage, sourceGeometry, depthMeters
         };
         const mask=Math.max(0,Math.min(1,(bilinear(scalar)-38/255)/0.22));
         if(mask<=0) return 0;
-        const tone=bilinear(gray), level=invert?1-tone:tone;
+        const tone=bilinear(gray), level=(autoInvert!==invert)?1-tone:tone;
         return Math.max(0,Math.min(depthMeters,depthMeters*level))*mask;
     };
 
