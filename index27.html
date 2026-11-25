@@ -1362,6 +1362,11 @@ function normalizeForCSG(geometry, materialIndex, preserveGroups = false) {
     if (!g.getAttribute('normal')) g.computeVertexNormals();
     ensureCSGUV(g);
 
+    // three-mesh-bvh / three-bvh-csg may access geometry.boundingBox
+    // while preparing a Brush. Recompute bounds after clone/toNonIndexed.
+    g.computeBoundingBox();
+    g.computeBoundingSphere();
+
     const total = g.getAttribute('position').count;
     g.clearGroups();
 
@@ -4955,7 +4960,15 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
         setStatus('⏳ Выполнение CSG: ' + cutters.length + ' операция(й)…');
         cutters.forEach((c, idx) => {
             try {
-                const beforeCount = brush.geometry.getAttribute('position')?.count || 0;
+                // Ensure both operands have complete spatial bounds before BVH construction.
+                if (!brush.geometry.boundingBox) brush.geometry.computeBoundingBox();
+                if (!brush.geometry.boundingSphere) brush.geometry.computeBoundingSphere();
+                if (!c.geometry.boundingBox) c.geometry.computeBoundingBox();
+                if (!c.geometry.boundingSphere) c.geometry.computeBoundingSphere();
+                if (!brush.geometry.getAttribute('position') || !c.geometry.getAttribute('position')) {
+                    throw new Error('CSG: отсутствует атрибут position у одной из геометрий');
+                }
+                const beforeCount = brush.geometry.getAttribute('position').count;
                 const nextBrush = evaluator.evaluate(brush, c, op);
                 const afterCount = nextBrush.geometry.getAttribute('position')?.count || 0;
                 log('[CSG DIAG] operation=' + (op === SUBTRACTION ? 'SUBTRACTION' : op === ADDITION ? 'ADDITION' : 'INTERSECTION') +
