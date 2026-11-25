@@ -504,6 +504,7 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
         </div>
         <div class="btn-row" style="margin-top:8px;">
             <button id="btn-build-image-relief" class="primary" disabled>🗿 Создать рельеф</button>
+            <button id="btn-build-image-relief-direct" type="button" disabled>⚡ Прямой рельеф (тест)</button>
             <button id="btn-remove-image-relief" class="danger" disabled>Удалить рельеф</button>
         </div>
         <div id="relief-status" class="import-status">Сначала выбери изображение и создай стелу.</div>
@@ -7111,6 +7112,148 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
     geometry.computeBoundingSphere();
     return geometry;
 }
+
+/*
+ * EXPERIMENTAL: direct height-field displacement of the stone's planar cap.
+ * This avoids the expensive CSG evaluator. It is intentionally restricted to
+ * the primary extruded stone and only replaces triangles on the selected flat face.
+ */
+function buildImageReliefDirectGeometry(sourceImage, sourceGeometry, depthMeters, blur, invert, resolution, placement = {}) {
+    const source = sourceGeometry.index ? sourceGeometry.toNonIndexed() : sourceGeometry.clone();
+    if (!source.getAttribute('normal')) source.computeVertexNormals();
+    const pos = source.getAttribute('position');
+    const uv = source.getAttribute('uv');
+    if (!pos) throw new Error('Прямая обработка: у стелы нет координат вершин.');
+    source.computeBoundingBox();
+    const box = source.boundingBox;
+    const faceZ = placement.side === 'back' ? box.min.z : box.max.z;
+    const faceSign = placement.side === 'back' ? 1 : -1;
+    const faceNormalSign = placement.side === 'back' ? -1 : 1;
+    const sizeX = box.max.x - box.min.x, sizeY = box.max.y - box.min.y;
+    const aspect = sourceImage.naturalWidth / sourceImage.naturalHeight;
+    const width = Number(placement.width) > 0 ? Number(placement.width) : sizeX * 0.6;
+    const height = width / aspect;
+    const centerX = Number(placement.x) || 0, centerY = Number(placement.y) || 0;
+    const angle = (Number(placement.rotation) || 0) * Math.PI / 180;
+    const ca = Math.cos(angle), sa = Math.sin(angle);
+    const longEdge = Math.max(128, Math.min(640, Math.round(resolution || 384)));
+    const nx = Math.max(64, Math.round(aspect >= 1 ? longEdge : longEdge * aspect));
+    const ny = Math.max(64, Math.round(aspect >= 1 ? longEdge / aspect : longEdge));
+    const canvas = document.createElement('canvas');
+    canvas.width = nx; canvas.height = ny;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.filter = blur > 0 ? 'blur(' + blur + 'px)' : 'none';
+    ctx.drawImage(sourceImage, 0, 0, nx, ny);
+    ctx.filter = 'none';
+    const pixels = ctx.getImageData(0, 0, nx, ny).data;
+    const corners = [];
+    for (const [cx, cy] of [[0,0],[1,0],[0,1],[1,1]]) {
+        let r=0,g=0,b=0,n=0;
+        for(let yy=0;yy<8;yy++) for(let xx=0;xx<8;xx++) {
+            const x=cx?nx-1-xx:xx, y=cy?ny-1-yy:yy, p=(y*nx+x)*4;
+            if(pixels[p+3]>200){r+=pixels[p];g+=pixels[p+1];b+=pixels[p+2];n++;}
+        }
+        if(n) corners.push([r/n,g/n,b/n]);
+    }
+    const bg=[0,1,2].map(k=>corners.length?corners.reduce((v,c)=>v+c[k],0)/corners.length:255);
+    const scalar = new Float32Array(nx*ny), gray = new Float32Array(nx*ny);
+    for(let i=0;i<nx*ny;i++){
+        const p=i*4, dr=pixels[p]-bg[0], dg=pixels[p+1]-bg[1], db=pixels[p+2]-bg[2];
+        scalar[i]=pixels[p+3]<250 ? pixels[p+3]/255 : Math.min(1,Math.hypot(dr,dg,db)/255);
+        gray[i]=(0.2126*pixels[p]+0.7152*pixels[p+1]+0.0722*pixels[p+2])/255;
+    }
+    const sample = (x,y) => {
+        const dx=x-centerX, dy=y-centerY;
+        const rx=ca*dx+sa*dy, ry=-sa*dx+ca*dy;
+        const u=rx/width+0.5, v=0.5-ry/height;
+        if(u<0||u>1||v<0||v>1) return 0;
+        const fx=u*(nx-1), fy=v*(ny-1), x0=Math.floor(fx), y0=Math.floor(fy);
+        const x1=Math.min(nx-1,x0+1), y1=Math.min(ny-1,y0+1), tx=fx-x0, ty=fy-y0;
+        const bilinear=(arr)=>{
+            const a=arr[y0*nx+x0]*(1-tx)+arr[y0*nx+x1]*tx;
+            const b=arr[y1*nx+x0]*(1-tx)+arr[y1*nx+x1]*tx;
+            return a*(1-ty)+b*ty;
+        };
+        const mask=Math.max(0,Math.min(1,(bilinear(scalar)-38/255)/0.22));
+        if(mask<=0) return 0;
+        const tone=bilinear(gray), level=invert?1-tone:tone;
+        return Math.max(0,Math.min(depthMeters,depthMeters*level))*mask;
+    };
+
+    const subdivision=Math.max(32,Math.min(128,Math.round(longEdge/4)));
+    const outPositions=[], outUvs=[], outIndices=[], cache=new Map(), outGroups=[];
+    const addVertex=(x,y,z,u,v,materialIndex)=>{
+        const key=materialIndex+':'+[x,y,z,u,v].map(n=>Math.round(n*1e7)).join(':');
+        let id=cache.get(key);
+        if(id!==undefined)return id;
+        id=outPositions.length/3; cache.set(key,id);
+        outPositions.push(x,y,z); outUvs.push(u,v); return id;
+    };
+    const emit=(a,b,c,materialIndex)=>{
+        outIndices.push(
+            addVertex(a.x,a.y,a.z,a.u,a.v,materialIndex),
+            addVertex(b.x,b.y,b.z,b.u,b.v,materialIndex),
+            addVertex(c.x,c.y,c.z,c.u,c.v,materialIndex)
+        );
+    };
+    const groups=source.groups.length?source.groups:[{start:0,count:pos.count,materialIndex:0}];
+    const faceTolerance=Math.max(sizeX,sizeY,box.max.z-box.min.z)*1e-5+1e-7;
+    let displacedFaceTriangles=0;
+    for(const group of groups){
+        const groupStart=outIndices.length;
+        const end=Math.min(pos.count,group.start+group.count);
+        for(let i=group.start;i+2<end;i+=3){
+            const vertices=[];
+            for(let k=0;k<3;k++){
+                const j=i+k;
+                vertices.push({
+                    x:pos.getX(j), y:pos.getY(j), z:pos.getZ(j),
+                    u:uv?uv.getX(j):0, v:uv?uv.getY(j):0,
+                    nz:source.getAttribute('normal')?.getZ(j)||0
+                });
+            }
+            const isFace=vertices.every(v=>Math.abs(v.z-faceZ)<=faceTolerance) &&
+                vertices.reduce((sum,v)=>sum+v.nz,0)/3*faceNormalSign>0.9;
+            if(!isFace){
+                emit(vertices[0],vertices[1],vertices[2],group.materialIndex);
+                continue;
+            }
+            displacedFaceTriangles++;
+            const n=subdivision, lattice=[];
+            for(let a=0;a<=n;a++){
+                lattice[a]=[];
+                for(let b=0;b<=n-a;b++){
+                    const c=n-a-b;
+                    const w0=a/n,w1=b/n,w2=c/n;
+                    const x=vertices[0].x*w0+vertices[1].x*w1+vertices[2].x*w2;
+                    const y=vertices[0].y*w0+vertices[1].y*w1+vertices[2].y*w2;
+                    const baseZ=faceZ, cut=sample(x,y);
+                    lattice[a][b]={
+                        x,y,z:baseZ+faceSign*cut,
+                        u:vertices[0].u*w0+vertices[1].u*w1+vertices[2].u*w2,
+                        v:vertices[0].v*w0+vertices[1].v*w1+vertices[2].v*w2
+                    };
+                }
+            }
+            for(let a=0;a<n;a++) for(let b=0;b<n-a;b++){
+                emit(lattice[a][b],lattice[a+1][b],lattice[a][b+1],group.materialIndex);
+                if(a+b<n-1) emit(lattice[a+1][b],lattice[a+1][b+1],lattice[a][b+1],group.materialIndex);
+            }
+        }
+        if(outIndices.length>groupStart) outGroups.push({start:groupStart,count:outIndices.length-groupStart,materialIndex:group.materialIndex});
+    }
+    if(!displacedFaceTriangles) throw new Error('Не найдена плоская поверхность выбранной стороны. Этот эксперимент пока поддерживает стандартную плоскую стелу.');
+    const result=new THREE.BufferGeometry();
+    result.setAttribute('position',new THREE.Float32BufferAttribute(outPositions,3));
+    result.setAttribute('uv',new THREE.Float32BufferAttribute(outUvs,2));
+    result.setIndex(outIndices);
+    outGroups.forEach(g=>result.addGroup(g.start,g.count,g.materialIndex));
+    result.computeVertexNormals(); result.computeBoundingBox(); result.computeBoundingSphere();
+    source.dispose();
+    console.log('[DIRECT RELIEF] faceTriangles='+displacedFaceTriangles+', subdivision='+subdivision+', outputTriangles='+Math.floor(outIndices.length/3));
+    return result;
+}
+
 function removeImageRelief() {
     const removeButton = document.getElementById('btn-remove-image-relief');
     // The relief is part of the stone geometry. Restore the saved pre-relief
@@ -7190,6 +7333,45 @@ document.getElementById('btn-build-image-relief').addEventListener('click', asyn
         buildButton.disabled = !stellaMesh || !reliefSourceImage;
     }
 });
+
+document.getElementById('btn-build-image-relief-direct').addEventListener('click', async () => {
+    const button=document.getElementById('btn-build-image-relief-direct');
+    const status=document.getElementById('relief-status');
+    if(!stellaMesh||!reliefSourceImage){status.textContent='Сначала создай стелу и выбери изображение.';return;}
+    if(selectedAssemblyTarget && selectedAssemblyTarget!==stellaMesh){status.textContent='Эксперимент пока работает только с основной стелой.';return;}
+    button.disabled=true;
+    const started=performance.now();
+    try{
+        showLoading(true,'Построение прямого рельефа без CSG…');
+        await new Promise(resolve=>requestAnimationFrame(()=>resolve()));
+        stellaMesh.geometry.computeBoundingBox();
+        const nextGeometry=buildImageReliefDirectGeometry(
+            reliefSourceImage,stellaMesh.geometry,
+            Number(reliefDepthInput.value)/1000,
+            Number(reliefBlurInput.value),reliefInvertInput.checked,
+            Number(reliefResolutionInput.value),getImageReliefPlacement()
+        );
+        pushUndo();
+        imageReliefUndoState=undoStack[undoStack.length-1]||null;
+        const previous=stellaMesh.geometry;
+        stellaMesh.geometry=nextGeometry;
+        previous.dispose();
+        stellaMesh.geometry.computeBoundingBox();stellaMesh.geometry.computeBoundingSphere();
+        disposeImageReliefPreview();
+        document.getElementById('btn-undo').disabled=false;
+        document.getElementById('btn-remove-image-relief').disabled=!imageReliefUndoState;
+        status.textContent='Экспериментальный рельеф построен напрямую в поверхности, без булевой операции. Проверь качество и экспорт STL.';
+        setStatus('Прямой рельеф построен без CSG.');
+        console.log('[DIRECT RELIEF PERF] total: '+(performance.now()-started).toFixed(1)+' ms');
+    }catch(error){
+        console.error('[DIRECT RELIEF] ',error);
+        status.textContent='Ошибка прямого рельефа: '+error.message;
+    }finally{
+        showLoading(false);
+        button.disabled=!stellaMesh||!reliefSourceImage;
+    }
+});
+
 document.getElementById('btn-remove-image-relief').addEventListener('click', removeImageRelief);
 
 /* END IMAGE RELIEF MODULE */
