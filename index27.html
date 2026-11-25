@@ -6766,7 +6766,7 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-    geometry.setIndex(compactIndices);
+    geometry.setIndex(new THREE.BufferAttribute(compactIndices, 1));
     geometry.addGroup(0, compactIndices.length, 0);
     geometry.computeVertexNormals();
     geometry.computeBoundingBox();
