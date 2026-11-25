@@ -6583,17 +6583,6 @@ reliefFileInput.addEventListener('change', event => {
     image.src = url;
 });
 
-function removeImageRelief() {
-    if (!imageReliefMesh) return;
-    if (imageReliefMesh.parent) imageReliefMesh.parent.remove(imageReliefMesh);
-    if (imageReliefMesh.geometry) imageReliefMesh.geometry.dispose();
-    if (Array.isArray(imageReliefMesh.material)) imageReliefMesh.material.forEach(m => m.dispose());
-    else if (imageReliefMesh.material) imageReliefMesh.material.dispose();
-    imageReliefMesh = null;
-    document.getElementById('btn-remove-image-relief').disabled = true;
-    document.getElementById('relief-status').textContent = 'Рельеф удалён.';
-}
-
 function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPercent, blur, invert, resolution) {
     const maxWidth = stoneBox.max.x - stoneBox.min.x;
     const maxHeight = stoneBox.max.y - stoneBox.min.y;
