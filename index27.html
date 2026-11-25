@@ -468,7 +468,14 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
             <input type="file" id="relief-image-file" accept="image/png,image/jpeg,image/webp" style="width:100%;margin-top:5px;">
         </label>
         <div id="relief-image-name" class="import-status">Изображение не выбрано</div>
-        <label>Детализация сетки: <span class="val" id="relief-resolution-value">768</span>
+        <label>Тип рельефа:
+            <select id="relief-mode" style="width:100%;margin-top:4px;">
+                <option value="heightmap" selected>Объёмное изображение (акант, скульптура)</option>
+                <option value="ornament">Комбинированный орнамент (выпуклые элементы + углублённые контуры)</option>
+            </select>
+        </label>
+        <div class="draw-instructions" id="relief-mode-help">Для фотографий и готовых grayscale-карт высот сохраняет перепады яркости.</div>
+        <label>Детализация сетки: <span class="val" id="relief-resolution-value">384</span>
             <input type="range" id="relief-resolution" min="128" max="640" step="32" value="384">
         </label>
         <label>Глубина рельефа: <span class="val" id="relief-depth-value">8</span> мм
@@ -6616,7 +6623,9 @@ const reliefResolutionInput = document.getElementById('relief-resolution');
 const reliefPosXInput=document.getElementById('relief-pos-x'), reliefPosYInput=document.getElementById('relief-pos-y');
 const reliefWidthInput=document.getElementById('relief-width'), reliefRotationInput=document.getElementById('relief-rotation');
 let imageReliefSide='front', imageReliefPreviewTexture=null;
-function getImageReliefPlacement(){return{x:Number(reliefPosXInput.value)||0,y:Number(reliefPosYInput.value)||0,width:Math.max(.01,Number(reliefWidthInput.value)||.30),rotation:Number(reliefRotationInput.value)||0,side:imageReliefSide};}
+const reliefModeInput=document.getElementById('relief-mode');
+function getImageReliefPlacement(){return{x:Number(reliefPosXInput.value)||0,y:Number(reliefPosYInput.value)||0,width:Math.max(.01,Number(reliefWidthInput.value)||.30),rotation:Number(reliefRotationInput.value)||0,side:imageReliefSide,mode:reliefModeInput.value};}
+reliefModeInput.addEventListener('change',()=>{document.getElementById('relief-mode-help').textContent=reliefModeInput.value==='ornament'?'Для плоской графики: контуры становятся более глубокими, внутренние области — выпуклыми; яркость добавляет небольшую вариацию глубины.':'Для фотографий и готовых grayscale-карт высот сохраняет перепады яркости.';});
 function disposeImageReliefPreview(){if(imageReliefMesh){scene.remove(imageReliefMesh);imageReliefMesh.geometry?.dispose();imageReliefMesh.material?.dispose();imageReliefMesh=null;}if(imageReliefPreviewTexture){imageReliefPreviewTexture.dispose();imageReliefPreviewTexture=null;}}
 function makeImageReliefPreviewTexture(image){
  const canvas=document.createElement('canvas');canvas.width=512;canvas.height=Math.max(64,Math.round(512*image.naturalHeight/image.naturalWidth));
@@ -6730,6 +6739,7 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
         ? cornerSamples.reduce((sum, c) => sum + c[k], 0) / cornerSamples.length : 255);
     const scalar = new Float32Array(stride * (ny + 1));
     const grayValues = new Float32Array(scalar.length);
+    const rgbValues = new Uint8Array(scalar.length * 3);
     let maxMask = 0;
     for (let y = 0; y <= ny; y++) for (let x = 0; x <= nx; x++) {
         const i = y * stride + x, p = i * 4;
@@ -6739,10 +6749,76 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
         // На изображениях с прозрачностью контур задаёт alpha; на JPG — отличие от фона.
         scalar[i] = (x === 0 || y === 0 || x === nx || y === ny) ? 0 : (pixels[p + 3] < 250 ? alpha : Math.min(1, distance / 255));
         grayValues[i] = (0.2126 * pixels[p] + 0.7152 * pixels[p + 1] + 0.0722 * pixels[p + 2]) / 255;
+        rgbValues[i * 3] = pixels[p]; rgbValues[i * 3 + 1] = pixels[p + 1]; rgbValues[i * 3 + 2] = pixels[p + 2];
         if (scalar[i] > maxMask) maxMask = scalar[i];
     }
     const threshold = 38 / 255;
     if (maxMask <= threshold) throw new Error('Объект не найден: фон занимает всё изображение. Попробуй изображение с более контрастным фоном.');
+
+    const ornamentMode = placement.mode === 'ornament';
+    const ornamentDistance = ornamentMode ? new Float32Array(scalar.length) : null;
+    let grayLow = 0, grayHigh = 1;
+    if (ornamentMode) {
+        // Автоуровни по перцентилям 2–98% внутри маски, без влияния фона.
+        const histogram = new Uint32Array(256);
+        let sampleCount = 0;
+        for (let i = 0; i < scalar.length; i++) if (scalar[i] >= threshold) {
+            histogram[Math.max(0, Math.min(255, Math.round(grayValues[i] * 255)))]++;
+            sampleCount++;
+        }
+        const percentile = target => {
+            const wanted = Math.floor(sampleCount * target);
+            let accumulated = 0;
+            for (let k = 0; k < 256; k++) { accumulated += histogram[k]; if (accumulated >= wanted) return k / 255; }
+            return 1;
+        };
+        grayLow = percentile(0.02); grayHigh = percentile(0.98);
+        if (grayHigh - grayLow < 0.04) { grayLow = 0; grayHigh = 1; }
+
+        // Карта расстояния до внешней и внутренних цветовых границ.
+        // Вдоль этих границ фреза формирует углублённую линию, а середина
+        // цветового элемента остаётся выше, создавая эффект комбинированного барельефа.
+        const far = nx + ny + 10;
+        for (let y = 0; y <= ny; y++) for (let x = 0; x <= nx; x++) {
+            const i = y * stride + x;
+            if (scalar[i] < threshold) { ornamentDistance[i] = 0; continue; }
+            let edge = x === 0 || y === 0 || x === nx || y === ny;
+            const neighbors = [[x-1,y],[x+1,y],[x,y-1],[x,y+1]];
+            for (const [xx,yy] of neighbors) {
+                const ni = yy * stride + xx;
+                if (xx < 0 || yy < 0 || xx > nx || yy > ny || scalar[ni] < threshold) { edge = true; continue; }
+                const colorDelta = Math.hypot(
+                    rgbValues[i*3]-rgbValues[ni*3],
+                    rgbValues[i*3+1]-rgbValues[ni*3+1],
+                    rgbValues[i*3+2]-rgbValues[ni*3+2]
+                );
+                if (colorDelta > 48) edge = true;
+            }
+            ornamentDistance[i] = edge ? 0 : far;
+        }
+        // Двухпроходное chamfer distance transform (8 соседей).
+        const diag = 1.41421356;
+        for (let y = 0; y <= ny; y++) for (let x = 0; x <= nx; x++) {
+            const i = y * stride + x;
+            if (scalar[i] < threshold) continue;
+            let d = ornamentDistance[i];
+            if (x > 0) d = Math.min(d, ornamentDistance[i-1] + 1);
+            if (y > 0) d = Math.min(d, ornamentDistance[i-stride] + 1);
+            if (x > 0 && y > 0) d = Math.min(d, ornamentDistance[i-stride-1] + diag);
+            if (x < nx && y > 0) d = Math.min(d, ornamentDistance[i-stride+1] + diag);
+            ornamentDistance[i] = d;
+        }
+        for (let y = ny; y >= 0; y--) for (let x = nx; x >= 0; x--) {
+            const i = y * stride + x;
+            if (scalar[i] < threshold) continue;
+            let d = ornamentDistance[i];
+            if (x < nx) d = Math.min(d, ornamentDistance[i+1] + 1);
+            if (y < ny) d = Math.min(d, ornamentDistance[i+stride] + 1);
+            if (x < nx && y < ny) d = Math.min(d, ornamentDistance[i+stride+1] + diag);
+            if (x > 0 && y < ny) d = Math.min(d, ornamentDistance[i+stride-1] + diag);
+            ornamentDistance[i] = d;
+        }
+    }
 
     const faceZ = side === 'back' ? stoneBox.min.z : stoneBox.max.z;
     const cutterTopZ = faceZ + (side === 'back' ? -1 : 1) * Math.max(0.001, depthMeters * 0.15);
@@ -6754,8 +6830,24 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
     const vertexAt = (gx, gy, value, gray) => {
         const px = gx / nx, py = gy / ny;
         const point = rotatePoint(centerX + width * (px - 0.5), centerY + height * (0.5 - py));
-        const level = (invert ? 1 - gray : gray);
-        const bottomDepth = 0.00015 + Math.max(0, level) * depthMeters;
+        let bottomDepth;
+        if (ornamentMode) {
+            const gx0 = Math.max(0, Math.min(nx, Math.round(gx)));
+            const gy0 = Math.max(0, Math.min(ny, Math.round(gy)));
+            const dist = ornamentDistance[gy0 * stride + gx0];
+            const bevelRadius = Math.max(3, Math.min(14, Math.round(Math.min(nx, ny) * 0.035)));
+            const t = Math.max(0, Math.min(1, dist / bevelRadius));
+            const smooth = t * t * (3 - 2 * t);
+            const tone = Math.max(0, Math.min(1, (gray - grayLow) / Math.max(0.001, grayHigh - grayLow)));
+            const toneCut = invert ? tone : 1 - tone;
+            // У границы — глубокая разделительная канавка; в центре — более мелкая
+            // выборка, поэтому элементы визуально остаются выпуклыми.
+            bottomDepth = 0.00015 + depthMeters * (0.82 - 0.48 * smooth + 0.16 * toneCut);
+            bottomDepth = Math.max(depthMeters * 0.22, Math.min(depthMeters * 0.98, bottomDepth));
+        } else {
+            const level = (invert ? 1 - gray : gray);
+            bottomDepth = 0.00015 + Math.max(0, level) * depthMeters;
+        }
         return { x: point.x, y: point.y, s: value, gray, depth: bottomDepth, u: px, v: 1 - py, gx, gy };
     };
     const interpolate = (a, b) => {
