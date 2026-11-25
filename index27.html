@@ -1362,6 +1362,16 @@ function normalizeForCSG(geometry, materialIndex, preserveGroups = false) {
     if (!g.getAttribute('normal')) g.computeVertexNormals();
     ensureCSGUV(g);
 
+    // three-bvh-csg@0.0.16 expects an indexed BufferGeometry in its BVH path.
+    // Some imported/processed meshes are non-indexed; create a sequential index
+    // rather than passing an undefined geometry.index into the evaluator.
+    if (!g.getIndex()) {
+        const positionCount = g.getAttribute('position').count;
+        const sequentialIndex = new (positionCount > 65535 ? Uint32Array : Uint16Array)(positionCount);
+        for (let i = 0; i < positionCount; i++) sequentialIndex[i] = i;
+        g.setIndex(new THREE.BufferAttribute(sequentialIndex, 1));
+    }
+
     // three-mesh-bvh / three-bvh-csg may access geometry.boundingBox
     // while preparing a Brush. Recompute bounds after clone/toNonIndexed.
     g.computeBoundingBox();
@@ -4978,6 +4988,15 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
                 success++;
             } catch (e) {
                 log('CSG #' + (idx + 1) + ': ' + e.message);
+                if (e && e.stack) console.error('[CSG STACK]', e.stack);
+                console.error('[CSG GEOMETRY DIAG]', {
+                    targetIndexCount: brush && brush.geometry && brush.geometry.index ? brush.geometry.index.count : null,
+                    cutterIndexCount: c && c.geometry && c.geometry.index ? c.geometry.index.count : null,
+                    targetPositionCount: brush && brush.geometry && brush.geometry.getAttribute('position') ? brush.geometry.getAttribute('position').count : null,
+                    cutterPositionCount: c && c.geometry && c.geometry.getAttribute('position') ? c.geometry.getAttribute('position').count : null,
+                    targetGroups: brush && brush.geometry ? brush.geometry.groups : null,
+                    cutterGroups: c && c.geometry ? c.geometry.groups : null
+                });
             } finally {
                 disposeCSGBrush(c);
             }
