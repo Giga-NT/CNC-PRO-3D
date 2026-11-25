@@ -468,13 +468,6 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
             <input type="file" id="relief-image-file" accept="image/png,image/jpeg,image/webp" style="width:100%;margin-top:5px;">
         </label>
         <div id="relief-image-name" class="import-status">Изображение не выбрано</div>
-        <label>Материал самого рельефа
-            <select id="relief-material">
-                <option value="white" selected>Белый матовый камень</option>
-                <option value="lightgray">Светло-серый матовый камень</option>
-                <option value="darkgray">Тёмно-серый матовый камень</option>
-            </select>
-        </label>
         <label>Детализация сетки: <span class="val" id="relief-resolution-value">512</span>
             <input type="range" id="relief-resolution" min="128" max="640" step="32" value="512">
         </label>
@@ -6549,24 +6542,7 @@ const reliefDepthInput = document.getElementById('relief-depth');
 const reliefSizeInput = document.getElementById('relief-size');
 const reliefBlurInput = document.getElementById('relief-blur');
 const reliefInvertInput = document.getElementById('relief-invert');
-const reliefMaterialInput = document.getElementById('relief-material');
 const reliefResolutionInput = document.getElementById('relief-resolution');
-
-const RELIEF_MATERIAL_COLORS = {
-    white: 0xf2f1ed,
-    lightgray: 0xbfc3c7,
-    darkgray: 0x777d83
-};
-
-function applyReliefMaterial() {
-    if (!imageReliefMesh) return;
-    const color = RELIEF_MATERIAL_COLORS[reliefMaterialInput.value] || RELIEF_MATERIAL_COLORS.white;
-    imageReliefMesh.material.color.setHex(color);
-    imageReliefMesh.material.roughness = 0.96;
-    imageReliefMesh.material.metalness = 0;
-    imageReliefMesh.material.needsUpdate = true;
-}
-reliefMaterialInput.addEventListener('change', applyReliefMaterial);
 
 function updateReliefControls() {
     document.getElementById('relief-depth-value').textContent = reliefDepthInput.value;
