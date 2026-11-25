@@ -6939,6 +6939,7 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
     };
     const positions = [], uvs = [], indices = [];
     const vertexCache = new Map();
+    const boundarySegments = [];
     const addVertex = (v, isBottom) => {
         const key = (isBottom ? 'b:' : 't:') + Math.round(v.gx * 100000) + ':' + Math.round(v.gy * 100000);
         const cached = vertexCache.get(key);
@@ -6956,26 +6957,29 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
     const isBoundaryEdge = (a, b) =>
         Math.abs(a.s - threshold) < 1e-5 && Math.abs(b.s - threshold) < 1e-5;
     const emitClippedTriangle = (triangle) => {
-        let poly = triangle;
         const output = [];
-        for (let i = 0; i < poly.length; i++) {
-            const a = poly[i], b = poly[(i + 1) % poly.length];
+        for (let i = 0; i < triangle.length; i++) {
+            const a = triangle[i], b = triangle[(i + 1) % triangle.length];
             const ina = a.s >= threshold, inb = b.s >= threshold;
             if (ina && inb) output.push(b);
             else if (ina && !inb) output.push(interpolate(a, b));
             else if (!ina && inb) { output.push(interpolate(a, b)); output.push(b); }
         }
         if (output.length < 3) return;
-        const top = output.map(v => addVertex(v, false));
         const bottom = output.map(v => addVertex(v, true));
         for (let i = 1; i < output.length - 1; i++) {
-            indices.push(top[0], top[i], top[i + 1]);
+            // Детальная нижняя поверхность сохраняет исходную высотную карту.
             indices.push(bottom[0], bottom[i + 1], bottom[i]);
         }
         for (let i = 0; i < output.length; i++) {
             const j = (i + 1) % output.length;
             if (!isBoundaryEdge(output[i], output[j])) continue;
-            indices.push(top[i], bottom[i], top[j], top[j], bottom[i], bottom[j]);
+            const a = output[i], b = output[j];
+            addVertex(a, false); addVertex(b, false);
+            boundarySegments.push([a, b]);
+            const ta = addVertex(a, false), tb = addVertex(b, false);
+            const ba = addVertex(a, true), bb = addVertex(b, true);
+            indices.push(ta, ba, tb, tb, ba, bb);
         }
     };
     for (let y = 0; y < ny; y++) for (let x = 0; x < nx; x++) {
@@ -6986,6 +6990,99 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
         const a = at(x, y), b = at(x + 1, y), c = at(x + 1, y + 1), d = at(x, y + 1);
         emitClippedTriangle([a, d, b]);
         emitClippedTriangle([b, d, c]);
+    }
+
+    // Верхняя крышка лежит в одной плоскости. Вместо сотен тысяч
+    // копланарных треугольников строим её по контурам (с учётом отверстий).
+    // Нижняя поверхность при этом остаётся детальной.
+    const pointKey = v => Math.round(v.gx * 100000) + ':' + Math.round(v.gy * 100000);
+    const boundaryPoints = new Map();
+    const adjacency = new Map();
+    const edgeKeys = new Set();
+    const addNeighbor = (a, b) => {
+        if (!adjacency.has(a)) adjacency.set(a, []);
+        if (!adjacency.has(b)) adjacency.set(b, []);
+        if (!adjacency.get(a).includes(b)) adjacency.get(a).push(b);
+        if (!adjacency.get(b).includes(a)) adjacency.get(b).push(a);
+    };
+    for (const [a, b] of boundarySegments) {
+        const ka = pointKey(a), kb = pointKey(b);
+        if (ka === kb) continue;
+        boundaryPoints.set(ka, a); boundaryPoints.set(kb, b);
+        const ek = ka < kb ? ka + '|' + kb : kb + '|' + ka;
+        if (edgeKeys.has(ek)) continue;
+        edgeKeys.add(ek);
+        addNeighbor(ka, kb);
+    }
+    const visitedEdges = new Set();
+    const edgeKey = (a, b) => a < b ? a + '|' + b : b + '|' + a;
+    const boundaryLoops = [];
+    for (const [startKey, neighbors] of adjacency) {
+        if (neighbors.length !== 2) {
+            throw new Error('Контур рельефа неоднозначен: в одной точке сходятся несколько границ. Упрости контур изображения.');
+        }
+        for (const firstNext of neighbors) {
+            if (visitedEdges.has(edgeKey(startKey, firstNext))) continue;
+            const loop = [];
+            let previous = null, current = startKey, next = firstNext;
+            let guard = 0;
+            while (guard++ <= edgeKeys.size + 1) {
+                loop.push(boundaryPoints.get(current));
+                visitedEdges.add(edgeKey(current, next));
+                previous = current;
+                current = next;
+                if (current === startKey) break;
+                const around = adjacency.get(current);
+                if (!around || around.length !== 2) break;
+                next = around[0] === previous ? around[1] : around[0];
+            }
+            if (current !== startKey || loop.length < 3) {
+                throw new Error('Не удалось замкнуть контур рельефа. Проверь исходное изображение.');
+            }
+            boundaryLoops.push(loop);
+        }
+    }
+    const signedArea = loop => {
+        let area = 0;
+        for (let i = 0; i < loop.length; i++) {
+            const a = loop[i], b = loop[(i + 1) % loop.length];
+            area += a.x * b.y - b.x * a.y;
+        }
+        return area * 0.5;
+    };
+    const pointInLoop = (point, loop) => {
+        let inside = false;
+        for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
+            const a = loop[i], b = loop[j];
+            if (((a.y > point.y) !== (b.y > point.y)) &&
+                point.x < (b.x - a.x) * (point.y - a.y) / (b.y - a.y) + a.x) inside = !inside;
+        }
+        return inside;
+    };
+    const loopAreas = boundaryLoops.map(loop => Math.abs(signedArea(loop)));
+    const parents = boundaryLoops.map((loop, i) => {
+        let parent = -1, parentArea = Infinity;
+        const probe = loop[0];
+        for (let j = 0; j < boundaryLoops.length; j++) {
+            if (i === j || loopAreas[j] <= loopAreas[i] || loopAreas[j] >= parentArea) continue;
+            if (pointInLoop(probe, boundaryLoops[j])) { parent = j; parentArea = loopAreas[j]; }
+        }
+        return parent;
+    });
+    const nestingDepth = boundaryLoops.map((loop, i) => {
+        let depth = 0, parent = parents[i], guard = 0;
+        while (parent !== -1 && guard++ < boundaryLoops.length) { depth++; parent = parents[parent]; }
+        return depth;
+    });
+    for (let i = 0; i < boundaryLoops.length; i++) {
+        if (nestingDepth[i] % 2 !== 0) continue;
+        const outer = boundaryLoops[i];
+        const holes = boundaryLoops.filter((loop, j) => parents[j] === i && nestingDepth[j] === nestingDepth[i] + 1);
+        const contour = outer.map(v => new THREE.Vector2(v.x, v.y));
+        const holeContours = holes.map(loop => loop.map(v => new THREE.Vector2(v.x, v.y)));
+        const capVertices = [outer, ...holes].flatMap(loop => loop.map(v => addVertex(v, false)));
+        const capFaces = THREE.ShapeUtils.triangulateShape(contour, holeContours);
+        for (const face of capFaces) indices.push(capVertices[face[0]], capVertices[face[1]], capVertices[face[2]]);
     }
     if (!indices.length) throw new Error('Не удалось построить поверхность рельефа.');
     const compactPositions = new Float32Array(positions);
