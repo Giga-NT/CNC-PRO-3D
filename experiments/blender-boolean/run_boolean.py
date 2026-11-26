@@ -226,6 +226,82 @@ def operand_boolean_probes(target, cutter):
             })
     return probes
 
+
+def make_cutter_repair_variant(source, mode):
+    """Build an isolated cutter copy for topology-repair experiments."""
+    obj = source.copy()
+    obj.data = source.data.copy()
+    bpy.context.collection.objects.link(obj)
+    obj.name = "Repair_" + mode
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    before = {
+        "vertices": len(bm.verts),
+        "faces": len(bm.faces),
+        "non_manifold_edges": sum(1 for e in bm.edges if not e.is_manifold),
+    }
+    details = {}
+    if mode.startswith("weld_"):
+        threshold = float(mode.split("_", 1)[1])
+        result = bmesh.ops.remove_doubles(bm, verts=list(bm.verts), dist=threshold)
+        details["welded_vertices"] = len(result.get("targetmap", {}))
+    elif mode == "delete_excess_faces_fill":
+        bad_edges = [e for e in bm.edges if len(e.link_faces) > 2]
+        faces_to_delete = set()
+        for edge in bad_edges:
+            linked = sorted(edge.link_faces, key=lambda face: face.calc_area())
+            # Keep the two largest incident faces on each offending edge.
+            faces_to_delete.update(linked[:-2])
+        details["deleted_faces"] = len(faces_to_delete)
+        if faces_to_delete:
+            bmesh.ops.delete(bm, geom=list(faces_to_delete), context="FACES_ONLY")
+        boundary_edges = [e for e in bm.edges if e.is_boundary]
+        details["boundary_edges_before_fill"] = len(boundary_edges)
+        if boundary_edges:
+            fill = bmesh.ops.holes_fill(bm, edges=boundary_edges, sides=0)
+            details["filled_faces"] = len(fill.get("faces", []))
+    elif mode == "delete_all_faces_touching_bad_edges_fill":
+        bad_edges = [e for e in bm.edges if len(e.link_faces) != 2]
+        faces_to_delete = {face for edge in bad_edges for face in edge.link_faces}
+        details["deleted_faces"] = len(faces_to_delete)
+        if faces_to_delete:
+            bmesh.ops.delete(bm, geom=list(faces_to_delete), context="FACES_ONLY")
+        boundary_edges = [e for e in bm.edges if e.is_boundary]
+        details["boundary_edges_before_fill"] = len(boundary_edges)
+        if boundary_edges:
+            fill = bmesh.ops.holes_fill(bm, edges=boundary_edges, sides=0)
+            details["filled_faces"] = len(fill.get("faces", []))
+    bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.data.update()
+    after = mesh_stats(obj)
+    return obj, {"mode": mode, "before": before, "after": after, "repair_details": details}
+
+
+def cutter_repair_boolean_probes(target, cutter):
+    results = []
+    modes = (
+        "weld_0.000001",
+        "weld_0.00001",
+        "weld_0.0001",
+        "delete_excess_faces_fill",
+        "delete_all_faces_touching_bad_edges_fill",
+    )
+    for mode in modes:
+        variant = None
+        try:
+            variant, repair = make_cutter_repair_variant(cutter, mode)
+            probe = boolean_probe(target, variant, "DIFFERENCE", flip_cutter=False)
+            results.append({"repair": repair, "boolean": probe})
+        except Exception as exc:
+            results.append({"mode": mode, "error": str(exc)})
+        finally:
+            if variant is not None:
+                bpy.data.objects.remove(variant, do_unlink=True)
+    return results
+
+
 def simple_cube_boolean_test():
     """Control test: subtract one closed cube from another using Blender Exact."""
     bpy.ops.object.select_all(action="DESELECT")
@@ -305,6 +381,7 @@ def main():
         "cutter_topology_before_recalc": topology_diagnostics(cutter),
         "simple_cube_control": simple_cube_boolean_test(),
         "operand_boolean_probes": operand_boolean_probes(target, cutter),
+        "cutter_repair_boolean_probes": cutter_repair_boolean_probes(target, cutter),
     }
 
     print("[BLENDER BOOLEAN] Input stats before normal recalculation:")
