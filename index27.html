@@ -3425,29 +3425,14 @@ document.getElementById('inp-ornament-svg')?.addEventListener('change', async (e
         for (let i = 1; i < imported.length; i++) drawContours.push(imported[i]);
         activeContourIndex = firstIndex;
         contourHoles.clear();
-        // Cache contour bounds and areas once. Testing every polygon against every
-        // other polygon without a bounds check made multi-part SVGs take O(n²)
-        // expensive point-in-polygon calls during import.
-        const contourMeta = imported.map(contour => {
-            let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
-            let twiceArea=0;
-            for (let i=0; i<contour.length; i++) {
-                const p=contour[i], q=contour[(i+1)%contour.length];
-                minX=Math.min(minX,p.x); minY=Math.min(minY,p.y);
-                maxX=Math.max(maxX,p.x); maxY=Math.max(maxY,p.y);
-                twiceArea += p.x*q.y-q.x*p.y;
-            }
-            return { minX,minY,maxX,maxY,area:Math.abs(twiceArea/2) };
-        });
+        const areaOf = c => Math.abs(c.reduce((sum,p,i) => {
+            const q=c[(i+1)%c.length]; return sum+p.x*q.y-q.x*p.y;
+        },0)/2);
         imported.forEach((inner, ii) => {
-            const probe = inner[0], meta = contourMeta[ii];
+            const probe = inner[0];
+            const area = areaOf(inner);
             for (let oi=0; oi<imported.length; oi++) {
-                if (oi===ii) continue;
-                const candidate = contourMeta[oi];
-                if (candidate.area <= meta.area ||
-                    probe.x < candidate.minX || probe.x > candidate.maxX ||
-                    probe.y < candidate.minY || probe.y > candidate.maxY) continue;
-                if (pointInPolygon(probe, imported[oi])) {
+                if (oi!==ii && areaOf(imported[oi])>area && pointInPolygon(probe, imported[oi])) {
                     contourHoles.add(firstIndex+ii); break;
                 }
             }
@@ -3462,14 +3447,8 @@ document.getElementById('inp-ornament-svg')?.addEventListener('change', async (e
         fitAllDrawContours();
         document.getElementById('btn-draw-finish').disabled = drawPoints.length < 3;
         document.getElementById('btn-draw-finish-all').disabled = !drawContours.some(c => c.length >= 3);
-        const importedPointCount = imported.reduce((sum, contour) => sum + contour.length, 0);
-        // Extruding thousands of points immediately after import can block the UI.
-        // Keep the 2D vector import responsive and defer heavy 3D preview for large files.
-        const defer3DPreview = importedPointCount > 2500 || imported.length > 80;
-        if (!defer3DPreview) showAllContoursIn3D();
-        setStatus(defer3DPreview
-            ? 'SVG импортирован: '+imported.length+' контуров, '+importedPointCount+' точек. 2D готово; 3D-превью отложено — нажми «Завершить все контуры», когда понадобится.'
-            : 'SVG: импортировано '+imported.length+' векторных контуров. Геометрия взята напрямую из SVG, без растрирования.');
+        showAllContoursIn3D();
+        setStatus('SVG: импортировано '+imported.length+' векторных контуров. Геометрия взята напрямую из SVG, без растрирования.');
     } catch (err) {
         setStatus('Ошибка SVG: ' + err.message);
         console.error(err);
