@@ -51,20 +51,69 @@ jobs:
           cmake --build "$env:KIGUMI_SRC\build" --config Release --target kigumi_cli --parallel 2
           if ($LASTEXITCODE -ne 0) { throw "Kigumi build failed" }
 
-      - name: Package executable and license
+      - name: Package executable, runtime DLLs and license
         shell: pwsh
         run: |
           $dist = Join-Path $env:GITHUB_WORKSPACE "dist-kigumi"
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
-          $exe = Get-ChildItem "$env:KIGUMI_SRC\build" -Recurse -Filter kigumi.exe | Select-Object -First 1
+
+          $exe = Get-ChildItem "$env:KIGUMI_SRC\build" -Recurse -Filter kigumi.exe |
+            Where-Object { $_.FullName -match "[\\/]Release[\\/]" } |
+            Select-Object -First 1
+          if (-not $exe) {
+            $exe = Get-ChildItem "$env:KIGUMI_SRC\build" -Recurse -Filter kigumi.exe | Select-Object -First 1
+          }
           if (-not $exe) { throw "kigumi.exe was not produced" }
           Copy-Item $exe.FullName (Join-Path $dist "kigumi.exe")
+
+          # Locate the vcpkg runtime directory recorded by CMake, with standard fallbacks.
+          $vcpkgBinCandidates = @()
+          $cachePath = Join-Path $env:KIGUMI_SRC "build\CMakeCache.txt"
+          if (Test-Path $cachePath) {
+            $cacheLine = Get-Content $cachePath | Where-Object { $_ -match "^VCPKG_INSTALLED_DIR:PATH=" } | Select-Object -First 1
+            if ($cacheLine) {
+              $installedDir = $cacheLine.Substring($cacheLine.IndexOf("=") + 1)
+              $vcpkgBinCandidates += Join-Path $installedDir "x64-windows\bin"
+            }
+          }
+          $vcpkgBinCandidates += @(
+            (Join-Path $env:KIGUMI_SRC "build\vcpkg_installed\x64-windows\bin"),
+            (Join-Path $env:KIGUMI_SRC "vcpkg_installed\x64-windows\bin")
+          )
+
+          $vcpkgBin = $vcpkgBinCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $vcpkgBin) {
+            throw "Could not locate vcpkg x64-windows runtime DLL directory. Checked: $($vcpkgBinCandidates -join '; ')"
+          }
+
+          $dlls = @(Get-ChildItem $vcpkgBin -Filter "*.dll" -File)
+          if ($dlls.Count -eq 0) { throw "No runtime DLLs found in $vcpkgBin" }
+          foreach ($dll in $dlls) {
+            Copy-Item $dll.FullName (Join-Path $dist $dll.Name) -Force
+          }
+
+          # Include any DLLs emitted beside the CLI executable itself.
+          Get-ChildItem $exe.DirectoryName -Filter "*.dll" -File -ErrorAction SilentlyContinue |
+            ForEach-Object { Copy-Item $_.FullName (Join-Path $dist $_.Name) -Force }
+
           Copy-Item "$env:KIGUMI_SRC\LICENSE" (Join-Path $dist "KIGUMI-LICENSE-MIT.txt")
           @"
           Kigumi CLI Windows x64 build for CNC PRO 3D testing.
           Source: https://github.com/unageek/kigumi
+          Runtime DLLs from the vcpkg x64-windows installation are bundled beside kigumi.exe.
           The executable also links CGAL and its dependencies. Review their licenses before redistribution.
           "@ | Set-Content (Join-Path $dist "BUILD-INFO.txt")
+
+          Write-Host "Packaged runtime DLL count: $(@(Get-ChildItem $dist -Filter '*.dll' -File).Count)"
+          # Smoke-test the packaged executable in the same directory users will receive.
+          Push-Location $dist
+          try {
+            & .\kigumi.exe --help
+            if ($LASTEXITCODE -ne 0) { throw "Packaged Kigumi smoke test failed with exit code $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
+
           Compress-Archive -Path "$dist\*" -DestinationPath (Join-Path $env:GITHUB_WORKSPACE "kigumi-windows-x64.zip") -Force
 
       - name: Upload Kigumi CLI
