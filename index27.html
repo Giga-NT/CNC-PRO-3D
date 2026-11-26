@@ -461,6 +461,54 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
         </div>
     </div>
 
+    <div class="control-group" id="image-relief-module">
+        <h3>🗿 Рельеф по изображению</h3>
+        <div class="draw-instructions">Загрузи рисунок или фотографию. Автоматически убирается фон по прозрачности или цвету углов изображения — вырезается только сам объект. Рельеф формируется непосредственно в камне. После операции можно отменить изменение кнопкой «Отменить».</div>
+        <label style="display:block;margin:7px 0;">Изображение (PNG, JPG, WebP)
+            <input type="file" id="relief-image-file" accept="image/png,image/jpeg,image/webp" style="width:100%;margin-top:5px;">
+        </label>
+        <div id="relief-image-name" class="import-status">Изображение не выбрано</div>
+        <label>Тип рельефа:
+            <select id="relief-mode" style="width:100%;margin-top:4px;">
+                <option value="heightmap" selected>Объёмное изображение (акант, скульптура)</option>
+                <option value="ornament">Комбинированный орнамент (выпуклые элементы + углублённые контуры)</option>
+            </select>
+        </label>
+        <div class="draw-instructions" id="relief-mode-help">Для фотографий и готовых grayscale-карт высот сохраняет перепады яркости.</div>
+        <label>Детализация сетки: <span class="val" id="relief-resolution-value">384</span>
+            <input type="range" id="relief-resolution" min="128" max="640" step="32" value="384">
+        </label>
+        <label>Глубина рельефа: <span class="val" id="relief-depth-value">8</span> мм
+            <input type="range" id="relief-depth" min="1" max="30" step="1" value="8">
+        </label>
+        <label>Ширина рисунка: <span class="val" id="relief-size-value">75</span>%
+            <input type="range" id="relief-size" min="20" max="100" step="1" value="75">
+        </label>
+        <div class="draw-instructions">Точное положение на поверхности (координаты в метрах от центра стелы):</div>
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;">
+            <label>X, м <input type="number" id="relief-pos-x" step="0.005" value="0"></label>
+            <label>Y, м <input type="number" id="relief-pos-y" step="0.005" value="0"></label>
+            <label>Ширина, м <input type="number" id="relief-width" min="0.01" step="0.005" value="0.30"></label>
+            <label>Поворот, ° <input type="number" id="relief-rotation" step="1" value="0"></label>
+        </div>
+        <div class="side-switch">
+            <span class="side-label">Сторона:</span>
+            <button type="button" id="relief-side-front" class="active-tool">⬜ Лицо</button>
+            <button type="button" id="relief-side-back">⬛ Оборот</button>
+        </div>
+        <label>Сглаживание: <span class="val" id="relief-blur-value">1.5</span>
+            <input type="range" id="relief-blur" min="0" max="5" step="0.5" value="1.5">
+        </label>
+        <div class="checkbox-row">
+            <label><input type="checkbox" id="relief-invert"> Инвертировать рельеф</label>
+        </div>
+        <div class="btn-row" style="margin-top:8px;">
+            <button id="btn-build-image-relief" class="primary" disabled>🗿 Создать рельеф</button>
+            <button id="btn-remove-image-relief" class="danger" disabled>Удалить рельеф</button>
+        </div>
+        <div id="relief-status" class="import-status">Сначала выбери изображение и создай стелу.</div>
+    </div>
+
     <div class="control-group">
         <h3>✏️ Контур выреза (2D)</h3>
 
@@ -915,6 +963,7 @@ log('Загрузка модулей...');
 
 let THREE, OrbitControls, TransformControls, STLExporter, GLTFExporter, STLLoader, GLTFLoader, FontLoader, TextGeometry;
 let Brush, Evaluator, SUBTRACTION, ADDITION, INTERSECTION;
+let MeshBVH, SAH;
 
 try {
     THREE = await import('three');
@@ -946,6 +995,13 @@ try { ({ TextGeometry } = await import('three/addons/geometries/TextGeometry.js'
 catch (e) { log(`TextGeometry: ${e.message}`); }
 
 let csgAvailable = false;
+try {
+    const bvhModule = await import('three-mesh-bvh');
+    MeshBVH = bvhModule.MeshBVH;
+    SAH = bvhModule.SAH;
+    log('three-mesh-bvh MeshBVH/SAH подключён');
+} catch (e) { log(`three-mesh-bvh: ${e.message}`); }
+
 try {
     const csgModule = await import('three-bvh-csg');
     Brush = csgModule.Brush;
@@ -1333,6 +1389,21 @@ function normalizeForCSG(geometry, materialIndex, preserveGroups = false) {
     if (!g.getAttribute('normal')) g.computeVertexNormals();
     ensureCSGUV(g);
 
+    // three-bvh-csg@0.0.16 expects an indexed BufferGeometry in its BVH path.
+    // Some imported/processed meshes are non-indexed; create a sequential index
+    // rather than passing an undefined geometry.index into the evaluator.
+    if (!g.getIndex()) {
+        const positionCount = g.getAttribute('position').count;
+        const sequentialIndex = new (positionCount > 65535 ? Uint32Array : Uint16Array)(positionCount);
+        for (let i = 0; i < positionCount; i++) sequentialIndex[i] = i;
+        g.setIndex(new THREE.BufferAttribute(sequentialIndex, 1));
+    }
+
+    // three-mesh-bvh / three-bvh-csg may access geometry.boundingBox
+    // while preparing a Brush. Recompute bounds after clone/toNonIndexed.
+    g.computeBoundingBox();
+    g.computeBoundingSphere();
+
     const total = g.getAttribute('position').count;
     g.clearGroups();
 
@@ -1344,11 +1415,20 @@ function normalizeForCSG(geometry, materialIndex, preserveGroups = false) {
     for (const grp of savedGroups) {
         const start = wasIndexed ? grp.start * 3 : grp.start;
         const count = wasIndexed ? grp.count * 3 : grp.count;
-        if (start + count > total) continue;
+        // MeshBVH 0.7.0 crashes on empty BVH roots: countNodes() descends
+        // into missing children when a group contains zero triangles.
+        // CSG groups must contain complete triangles and stay inside the index range.
+        if (!Number.isFinite(start) || !Number.isFinite(count)) continue;
+        if (start < 0 || count < 3 || count % 3 !== 0 || start + count > total) continue;
         g.addGroup(start, count, Math.max(0, grp.materialIndex | 0));
     }
 
-    if (g.groups.length === 0) g.addGroup(0, total, 0);
+    // A malformed/empty source group list must never produce an empty BVH root.
+    if (g.groups.length === 0) {
+        const validTriangleCount = total - (total % 3);
+        if (validTriangleCount < 3) throw new Error('CSG: недостаточно треугольников для построения BVH');
+        g.addGroup(0, validTriangleCount, 0);
+    }
 
     return g;
 }
@@ -3358,16 +3438,10 @@ function extractSvgVectorContours(source, viewBox) {
             // close the sampled outline for the native solid-cut pipeline.
             // Keep SVG outlines detailed enough for machining while preventing
             // thousands of tiny CSG triangles per contour from freezing the UI.
-            // Allocate samples by actual path length. A fixed minimum of 20 points
-            // per SVG element made files with many small, simple shapes hit the
-            // global limit even when their real geometry was lightweight.
-            const minCount = (explicitlyClosed || hasFill) ? 4 : 2;
-            const count = Math.max(minCount, Math.min(1400, Math.ceil(length / Math.max(vw, vh) * 260)));
+            const count = Math.max(20, Math.min(1400, Math.ceil(length / Math.max(vw, vh) * 260)));
+            if (sampled + count > 10000) throw new Error('Слишком сложный SVG: после оптимизации превышен лимит 10000 точек');
             const matrix = node.getCTM();
             if (!matrix) continue;
-            if (sampled + count > 10000) {
-                throw new Error('SVG содержит слишком много геометрии: превышен безопасный лимит 10000 точек. Уменьши количество отдельных элементов или упрости контуры.');
-            }
             const points = [];
             for (let i = 0; i < count; i++) {
                 const p = node.getPointAtLength(length * i / (explicitlyClosed ? count : count - 1));
@@ -4857,6 +4931,7 @@ function createAssemblyTargetBrush(mesh, csgMaterials = getAssemblyCSGMaterials(
 }
 
 async function runCSG(cutters, label, onSuccess, operation = null) {
+    const csgTotalStartedAt = performance.now();
     const selectedItem = selectedAssemblyTarget
         ? assemblyItems.find(item => item.root === selectedAssemblyTarget)
         : null;
@@ -4897,10 +4972,18 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
             targetMesh.updateWorldMatrix(true, false);
             assemblyTargetWorldMatrix = targetMesh.matrixWorld.clone();
         }
+        const targetBrushStartedAt = performance.now();
         brush = isAssemblyTarget
             ? createAssemblyTargetBrush(targetMesh, importedCSGMaterials, assemblyTargetWorldMatrix)
             : createStellaBrush();
         brush.updateMatrixWorld(true);
+        const targetPositionCount = brush.geometry.getAttribute('position')?.count || 0;
+        const targetTriangleCount = brush.geometry.index
+            ? Math.floor(brush.geometry.index.count / 3)
+            : Math.floor(targetPositionCount / 3);
+        log('[CSG PERF] target brush preparation: ' + (performance.now() - targetBrushStartedAt).toFixed(1) +
+            ' ms; vertices=' + targetPositionCount.toLocaleString('ru-RU') +
+            '; triangles=' + targetTriangleCount.toLocaleString('ru-RU'));
         const targetBounds = new THREE.Box3().setFromObject(brush);
         const cutterBounds = cutters.map(c => {
             c.updateMatrixWorld(true);
@@ -4932,9 +5015,36 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
         setStatus('⏳ Выполнение CSG: ' + cutters.length + ' операция(й)…');
         cutters.forEach((c, idx) => {
             try {
-                const beforeCount = brush.geometry.getAttribute('position')?.count || 0;
+                // Ensure both operands have complete spatial bounds before BVH construction.
+                if (!brush.geometry.boundingBox) brush.geometry.computeBoundingBox();
+                if (!brush.geometry.boundingSphere) brush.geometry.computeBoundingSphere();
+                if (!c.geometry.boundingBox) c.geometry.computeBoundingBox();
+                if (!c.geometry.boundingSphere) c.geometry.computeBoundingSphere();
+                if (!brush.geometry.getAttribute('position') || !c.geometry.getAttribute('position')) {
+                    throw new Error('CSG: отсутствует атрибут position у одной из геометрий');
+                }
+                // Validate BVH groups: no empty or partial-triangle ranges.
+                for (const [role, geometry] of [['target', brush.geometry], ['cutter', c.geometry]]) {
+                    const indexCount = geometry.index ? geometry.index.count : 0;
+                    const groups = geometry.groups || [];
+                    if (!indexCount || indexCount % 3 !== 0) {
+                        throw new Error('CSG: ' + role + ' имеет некорректное количество индексов (' + indexCount + ')');
+                    }
+                    if (!groups.length || groups.some(g => g.count < 3 || g.count % 3 !== 0 || g.start < 0 || g.start + g.count > indexCount)) {
+                        throw new Error('CSG: ' + role + ' содержит пустую или некорректную группу геометрии');
+                    }
+                }
+                const beforeCount = brush.geometry.getAttribute('position').count;
+                const evaluateStartedAt = performance.now();
                 const nextBrush = evaluator.evaluate(brush, c, op);
+                const evaluateMs = performance.now() - evaluateStartedAt;
                 const afterCount = nextBrush.geometry.getAttribute('position')?.count || 0;
+                const afterTriangles = nextBrush.geometry.index
+                    ? Math.floor(nextBrush.geometry.index.count / 3)
+                    : Math.floor(afterCount / 3);
+                log('[CSG PERF] evaluator.evaluate: ' + evaluateMs.toFixed(1) +
+                    ' ms; resultVertices=' + afterCount.toLocaleString('ru-RU') +
+                    '; resultTriangles=' + afterTriangles.toLocaleString('ru-RU'));
                 log('[CSG DIAG] operation=' + (op === SUBTRACTION ? 'SUBTRACTION' : op === ADDITION ? 'ADDITION' : 'INTERSECTION') +
                     ', vertices=' + beforeCount + ' -> ' + afterCount);
                 disposeCSGBrush(brush);
@@ -4942,6 +5052,20 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
                 success++;
             } catch (e) {
                 log('CSG #' + (idx + 1) + ': ' + e.message);
+                if (e && e.stack) console.error('[CSG STACK]', e.stack);
+                console.error('[CSG GEOMETRY DIAG]', {
+                    targetIndexCount: brush && brush.geometry && brush.geometry.index ? brush.geometry.index.count : null,
+                    cutterIndexCount: c && c.geometry && c.geometry.index ? c.geometry.index.count : null,
+                    cutterIndexType: c && c.geometry && c.geometry.index ? c.geometry.index.constructor && c.geometry.index.constructor.name : null,
+                    cutterIndexIsBufferAttribute: !!(c && c.geometry && c.geometry.index && c.geometry.index.isBufferAttribute),
+                    cutterIndexArrayType: c && c.geometry && c.geometry.index && c.geometry.index.array ? c.geometry.index.array.constructor.name : null,
+                    cutterIndexArrayLength: c && c.geometry && c.geometry.index && c.geometry.index.array ? c.geometry.index.array.length : null,
+                    cutterIndexKeys: c && c.geometry && c.geometry.index ? Object.keys(c.geometry.index).slice(0, 12) : null,
+                    targetPositionCount: brush && brush.geometry && brush.geometry.getAttribute('position') ? brush.geometry.getAttribute('position').count : null,
+                    cutterPositionCount: c && c.geometry && c.geometry.getAttribute('position') ? c.geometry.getAttribute('position').count : null,
+                    targetGroups: brush && brush.geometry ? brush.geometry.groups : null,
+                    cutterGroups: c && c.geometry ? c.geometry.groups : null
+                });
             } finally {
                 disposeCSGBrush(c);
             }
@@ -5012,6 +5136,7 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
 
         clearCutPreview();
         if (onSuccess) onSuccess(success);
+        log('[CSG PERF] runCSG total: ' + (performance.now() - csgTotalStartedAt).toFixed(1) + ' ms');
         showLoading(false);
         return true;
     } catch (e) {
@@ -5815,7 +5940,13 @@ function importSTL(file) {
     reader.readAsArrayBuffer(file);
 }
 function getAssemblyExportTarget() {
-    return assemblyItems.length ? assemblyRoot : (importedGroup || stellaMesh);
+    // Копия общей сборки для экспорта: стела с дочерним рельефом + импортированные модели.
+    const exportRoot = new THREE.Group();
+    exportRoot.name = 'CNC PRO 3D — export';
+    if (stellaMesh) exportRoot.add(stellaMesh.clone(true));
+    assemblyRoot.children.forEach(child => exportRoot.add(child.clone(true)));
+    if (!stellaMesh && !assemblyRoot.children.length && importedGroup) exportRoot.add(importedGroup.clone(true));
+    return exportRoot.children.length ? exportRoot : null;
 }
 
 document.getElementById('btn-export-stl').addEventListener('click', () => {
@@ -6500,6 +6631,575 @@ document.addEventListener('keydown', e => {
         }
     }
 });
+
+/* ============================================================
+   IMAGE RELIEF MODULE — image to real 3D height-field geometry
+   ============================================================ */
+let reliefSourceImage = null;
+let reliefSourceName = '';
+let imageReliefMesh = null;
+let imageReliefUndoState = null;
+
+const reliefFileInput = document.getElementById('relief-image-file');
+const reliefDepthInput = document.getElementById('relief-depth');
+const reliefSizeInput = document.getElementById('relief-size');
+const reliefBlurInput = document.getElementById('relief-blur');
+const reliefInvertInput = document.getElementById('relief-invert');
+const reliefResolutionInput = document.getElementById('relief-resolution');
+const reliefPosXInput=document.getElementById('relief-pos-x'), reliefPosYInput=document.getElementById('relief-pos-y');
+const reliefWidthInput=document.getElementById('relief-width'), reliefRotationInput=document.getElementById('relief-rotation');
+let imageReliefSide='front', imageReliefPreviewTexture=null;
+const reliefModeInput=document.getElementById('relief-mode');
+function getImageReliefPlacement(){return{x:Number(reliefPosXInput.value)||0,y:Number(reliefPosYInput.value)||0,width:Math.max(.01,Number(reliefWidthInput.value)||.30),rotation:Number(reliefRotationInput.value)||0,side:imageReliefSide,mode:reliefModeInput.value};}
+reliefModeInput.addEventListener('change',()=>{document.getElementById('relief-mode-help').textContent=reliefModeInput.value==='ornament'?'Для плоской графики: контуры становятся более глубокими, внутренние области — выпуклыми; яркость добавляет небольшую вариацию глубины.':'Для фотографий и готовых grayscale-карт высот сохраняет перепады яркости.';});
+function disposeImageReliefPreview(){if(imageReliefMesh){scene.remove(imageReliefMesh);imageReliefMesh.geometry?.dispose();imageReliefMesh.material?.dispose();imageReliefMesh=null;}if(imageReliefPreviewTexture){imageReliefPreviewTexture.dispose();imageReliefPreviewTexture=null;}}
+function makeImageReliefPreviewTexture(image){
+ const canvas=document.createElement('canvas');canvas.width=512;canvas.height=Math.max(64,Math.round(512*image.naturalHeight/image.naturalWidth));
+ const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(image,0,0,canvas.width,canvas.height);
+ const frame=ctx.getImageData(0,0,canvas.width,canvas.height),d=frame.data,corners=[];
+ for(const [cx,cy] of [[0,0],[1,0],[0,1],[1,1]]){let r=0,g=0,b=0,n=0;for(let yy=0;yy<8;yy++)for(let xx=0;xx<8;xx++){const x=cx?canvas.width-1-xx:xx,y=cy?canvas.height-1-yy:yy,p=(y*canvas.width+x)*4;if(d[p+3]>200){r+=d[p];g+=d[p+1];b+=d[p+2];n++;}}if(n)corners.push([r/n,g/n,b/n]);}
+ const bg=[0,1,2].map(k=>corners.length?corners.reduce((v,c)=>v+c[k],0)/corners.length:255);
+ for(let p=0;p<d.length;p+=4){const dr=d[p]-bg[0],dg=d[p+1]-bg[1],db=d[p+2]-bg[2];if(d[p+3]<=12||(d[p+3]>=245&&Math.sqrt(dr*dr+dg*dg+db*db)<=38))d[p+3]=0;}
+ ctx.putImageData(frame,0,0);const texture=new THREE.CanvasTexture(canvas);texture.colorSpace=THREE.SRGBColorSpace;return texture;
+}
+function updateImageReliefPreview(){
+ if(!reliefSourceImage||!stellaMesh?.geometry)return;
+ stellaMesh.geometry.computeBoundingBox();const box=stellaMesh.geometry.boundingBox,p=getImageReliefPlacement(),back=p.side==='back';
+ const width=p.width,height=width/(reliefSourceImage.naturalWidth/reliefSourceImage.naturalHeight);
+ if(!imageReliefMesh){imageReliefPreviewTexture=makeImageReliefPreviewTexture(reliefSourceImage);imageReliefMesh=new THREE.Mesh(new THREE.PlaneGeometry(width,height),new THREE.MeshBasicMaterial({map:imageReliefPreviewTexture,transparent:true,opacity:.82,depthWrite:false,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:-2}));imageReliefMesh.name='Image relief placement preview';imageReliefMesh.renderOrder=20;scene.add(imageReliefMesh);}
+ else{imageReliefMesh.geometry.dispose();imageReliefMesh.geometry=new THREE.PlaneGeometry(width,height);}
+ const localPos=new THREE.Vector3(p.x,p.y,back?box.min.z-.001:box.max.z+.001).multiply(stellaMesh.scale).applyQuaternion(stellaMesh.quaternion).add(stellaMesh.position);
+ imageReliefMesh.position.copy(localPos);imageReliefMesh.quaternion.copy(stellaMesh.quaternion).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0,back?Math.PI:0,p.rotation*Math.PI/180)));
+ imageReliefMesh.scale.copy(stellaMesh.scale);imageReliefMesh.updateMatrixWorld(true);
+}
+function syncReliefWidthFromPercent(){
+ if(!stellaMesh||!reliefSourceImage)return;stellaMesh.geometry.computeBoundingBox();const box=stellaMesh.geometry.boundingBox;
+ const aspect=reliefSourceImage.naturalWidth/reliefSourceImage.naturalHeight;
+ reliefWidthInput.value=Math.max(.01,Math.min((box.max.x-box.min.x)*Number(reliefSizeInput.value)/100,(box.max.y-box.min.y)*.68*aspect)).toFixed(3);
+}
+[reliefPosXInput,reliefPosYInput,reliefWidthInput,reliefRotationInput,reliefDepthInput,reliefSizeInput,reliefBlurInput,reliefInvertInput,reliefResolutionInput].forEach(input=>input.addEventListener('input',()=>{updateReliefControls();if(input===reliefSizeInput)syncReliefWidthFromPercent();updateImageReliefPreview();}));
+document.getElementById('relief-side-front').addEventListener('click',()=>{imageReliefSide='front';document.getElementById('relief-side-front').classList.add('active-tool');document.getElementById('relief-side-back').classList.remove('active-tool');updateImageReliefPreview();});
+document.getElementById('relief-side-back').addEventListener('click',()=>{imageReliefSide='back';document.getElementById('relief-side-back').classList.add('active-tool');document.getElementById('relief-side-front').classList.remove('active-tool');updateImageReliefPreview();});
+
+function updateReliefControls() {
+    document.getElementById('relief-depth-value').textContent = reliefDepthInput.value;
+    document.getElementById('relief-size-value').textContent = reliefSizeInput.value;
+    document.getElementById('relief-blur-value').textContent = reliefBlurInput.value;
+    document.getElementById('relief-resolution-value').textContent = reliefResolutionInput.value;
+}
+[reliefDepthInput, reliefSizeInput, reliefBlurInput, reliefResolutionInput].forEach(input =>
+    input.addEventListener('input', updateReliefControls)
+);
+updateReliefControls();
+
+reliefFileInput.addEventListener('change', event => {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    if (!/^image\/(png|jpeg|webp)$/.test(file.type)) {
+        document.getElementById('relief-status').textContent = 'Формат не поддерживается. Выбери PNG, JPG или WebP.';
+        event.target.value = '';
+        return;
+    }
+    const url = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+        if (reliefSourceImage && reliefSourceImage.__objectUrl) URL.revokeObjectURL(reliefSourceImage.__objectUrl);
+        image.__objectUrl = url;
+        reliefSourceImage = image;
+        reliefSourceName = file.name;
+        document.getElementById('relief-image-name').textContent =
+            file.name + ' · ' + image.naturalWidth + ' × ' + image.naturalHeight;
+        document.getElementById('btn-build-image-relief').disabled = !stellaMesh;
+        if(stellaMesh){syncReliefWidthFromPercent();updateImageReliefPreview();}
+        document.getElementById('relief-status').textContent =
+            stellaMesh ? 'Изображение загружено. Выставь положение, размер и поворот. Полупрозрачное изображение показывает место будущего рельефа.' : 'Изображение загружено. Сначала создай стелу.';
+    };
+    image.onerror = () => {
+        URL.revokeObjectURL(url);
+        document.getElementById('relief-status').textContent = 'Не удалось прочитать изображение.';
+    };
+    image.src = url;
+});
+
+function prepareImageReliefBVH(geometry) {
+    if (!geometry || geometry.boundsTree || typeof MeshBVH !== 'function' || SAH == null) return 0;
+    const startedAt = performance.now();
+    try {
+        // SAH changes only the acceleration structure, never the cutter triangles.
+        // indirect=true keeps the original index/triangle order intact for CSG.
+        geometry.boundsTree = new MeshBVH(geometry, {
+            strategy: SAH,
+            maxLeafTris: 3,
+            indirect: true,
+            verbose: false
+        });
+        const elapsed = performance.now() - startedAt;
+        log('[CSG PERF] cutter BVH (SAH): ' + elapsed.toFixed(1) + ' ms');
+        return elapsed;
+    } catch (error) {
+        // Keep the original three-bvh-csg path if a custom BVH cannot be built.
+        log('[CSG PERF] cutter BVH fallback to default: ' + error.message);
+        geometry.boundsTree = null;
+        return 0;
+    }
+}
+
+function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPercent, blur, invert, resolution, placement = {}) {
+    const maxWidth = stoneBox.max.x - stoneBox.min.x;
+    const maxHeight = stoneBox.max.y - stoneBox.min.y;
+    if (!(maxWidth > 0 && maxHeight > 0)) throw new Error('Не удалось определить размеры лицевой поверхности.');
+    const aspect = image.naturalWidth / image.naturalHeight;
+    const fitWidth = maxWidth * widthPercent / 100;
+    const fitHeight = maxHeight * 0.68;
+    const width = Number(placement.width) > 0 ? Number(placement.width) : Math.min(fitWidth, fitHeight * aspect);
+    const height = width / aspect;
+    const centerX = Number.isFinite(Number(placement.x)) ? Number(placement.x) : 0;
+    const centerY = Number.isFinite(Number(placement.y)) ? Number(placement.y) : 0;
+    const rotation = (Number(placement.rotation) || 0) * Math.PI / 180;
+    const side = placement.side === 'back' ? 'back' : 'front';
+    if (!(width > 0 && height > 0)) throw new Error('Некорректные размеры изображения.');
+
+    // Сетка задаёт только исходные отсчёты высоты. Граница объекта строится
+    // интерполяцией изолиний, а не выбором целых пиксельных ячеек.
+    const longEdge = Math.max(128, Math.min(640, Math.round(resolution || 384)));
+    const nx = Math.max(64, Math.round(aspect >= 1 ? longEdge : longEdge * aspect));
+    const ny = Math.max(64, Math.round(aspect >= 1 ? longEdge / aspect : longEdge));
+    const canvas = document.createElement('canvas');
+    canvas.width = nx + 1; canvas.height = ny + 1;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.clearRect(0, 0, nx + 1, ny + 1);
+    ctx.filter = blur > 0 ? 'blur(' + blur + 'px)' : 'none';
+    ctx.drawImage(image, 0, 0, nx + 1, ny + 1);
+    ctx.filter = 'none';
+    const pixels = ctx.getImageData(0, 0, nx + 1, ny + 1).data;
+    const stride = nx + 1;
+    const cornerSamples = [];
+    const sampleCorner = (cx, cy) => {
+        let rr = 0, gg = 0, bb = 0, n = 0;
+        for (let yy = 0; yy < 8; yy++) for (let xx = 0; xx < 8; xx++) {
+            const x = cx ? nx - xx : xx, y = cy ? ny - yy : yy;
+            const p = (y * stride + x) * 4;
+            if (pixels[p + 3] > 200) { rr += pixels[p]; gg += pixels[p + 1]; bb += pixels[p + 2]; n++; }
+        }
+        if (n) cornerSamples.push([rr / n, gg / n, bb / n]);
+    };
+    sampleCorner(0, 0); sampleCorner(1, 0); sampleCorner(0, 1); sampleCorner(1, 1);
+    const bg = [0, 1, 2].map(k => cornerSamples.length
+        ? cornerSamples.reduce((sum, c) => sum + c[k], 0) / cornerSamples.length : 255);
+    const scalar = new Float32Array(stride * (ny + 1));
+    const grayValues = new Float32Array(scalar.length);
+    const rgbValues = new Uint8Array(scalar.length * 3);
+    let maxMask = 0;
+    for (let y = 0; y <= ny; y++) for (let x = 0; x <= nx; x++) {
+        const i = y * stride + x, p = i * 4;
+        const alpha = pixels[p + 3] / 255;
+        const dr = pixels[p] - bg[0], dg = pixels[p + 1] - bg[1], db = pixels[p + 2] - bg[2];
+        const distance = Math.sqrt(dr * dr + dg * dg + db * db);
+        // На изображениях с прозрачностью контур задаёт alpha; на JPG — отличие от фона.
+        scalar[i] = (x === 0 || y === 0 || x === nx || y === ny) ? 0 : (pixels[p + 3] < 250 ? alpha : Math.min(1, distance / 255));
+        grayValues[i] = (0.2126 * pixels[p] + 0.7152 * pixels[p + 1] + 0.0722 * pixels[p + 2]) / 255;
+        rgbValues[i * 3] = pixels[p]; rgbValues[i * 3 + 1] = pixels[p + 1]; rgbValues[i * 3 + 2] = pixels[p + 2];
+        if (scalar[i] > maxMask) maxMask = scalar[i];
+    }
+    const threshold = 38 / 255;
+    if (maxMask <= threshold) throw new Error('Объект не найден: фон занимает всё изображение. Попробуй изображение с более контрастным фоном.');
+
+    const ornamentMode = placement.mode === 'ornament';
+    const ornamentDistance = ornamentMode ? new Float32Array(scalar.length) : null;
+    let grayLow = 0, grayHigh = 1;
+    if (ornamentMode) {
+        // Автоуровни по перцентилям 2–98% внутри маски, без влияния фона.
+        const histogram = new Uint32Array(256);
+        let sampleCount = 0;
+        for (let i = 0; i < scalar.length; i++) if (scalar[i] >= threshold) {
+            histogram[Math.max(0, Math.min(255, Math.round(grayValues[i] * 255)))]++;
+            sampleCount++;
+        }
+        const percentile = target => {
+            const wanted = Math.floor(sampleCount * target);
+            let accumulated = 0;
+            for (let k = 0; k < 256; k++) { accumulated += histogram[k]; if (accumulated >= wanted) return k / 255; }
+            return 1;
+        };
+        grayLow = percentile(0.02); grayHigh = percentile(0.98);
+        if (grayHigh - grayLow < 0.04) { grayLow = 0; grayHigh = 1; }
+
+        // Карта расстояния до внешней и внутренних цветовых границ.
+        // Вдоль этих границ фреза формирует углублённую линию, а середина
+        // цветового элемента остаётся выше, создавая эффект комбинированного барельефа.
+        const far = nx + ny + 10;
+        const hasColorEdge = (i, ni) => Math.hypot(
+            rgbValues[i*3] - rgbValues[ni*3],
+            rgbValues[i*3+1] - rgbValues[ni*3+1],
+            rgbValues[i*3+2] - rgbValues[ni*3+2]
+        ) > 48;
+        for (let y = 0; y <= ny; y++) for (let x = 0; x <= nx; x++) {
+            const i = y * stride + x;
+            if (scalar[i] < threshold) { ornamentDistance[i] = 0; continue; }
+            let edge = x === 0 || y === 0 || x === nx || y === ny;
+            if (x === 0 || scalar[i - 1] < threshold || hasColorEdge(i, i - 1)) edge = true;
+            if (x === nx || scalar[i + 1] < threshold || hasColorEdge(i, i + 1)) edge = true;
+            if (y === 0 || scalar[i - stride] < threshold || hasColorEdge(i, i - stride)) edge = true;
+            if (y === ny || scalar[i + stride] < threshold || hasColorEdge(i, i + stride)) edge = true;
+            ornamentDistance[i] = edge ? 0 : far;
+        }
+        // Двухпроходное chamfer distance transform (8 соседей).
+        const diag = 1.41421356;
+        for (let y = 0; y <= ny; y++) for (let x = 0; x <= nx; x++) {
+            const i = y * stride + x;
+            if (scalar[i] < threshold) continue;
+            let d = ornamentDistance[i];
+            if (x > 0) d = Math.min(d, ornamentDistance[i-1] + 1);
+            if (y > 0) d = Math.min(d, ornamentDistance[i-stride] + 1);
+            if (x > 0 && y > 0) d = Math.min(d, ornamentDistance[i-stride-1] + diag);
+            if (x < nx && y > 0) d = Math.min(d, ornamentDistance[i-stride+1] + diag);
+            ornamentDistance[i] = d;
+        }
+        for (let y = ny; y >= 0; y--) for (let x = nx; x >= 0; x--) {
+            const i = y * stride + x;
+            if (scalar[i] < threshold) continue;
+            let d = ornamentDistance[i];
+            if (x < nx) d = Math.min(d, ornamentDistance[i+1] + 1);
+            if (y < ny) d = Math.min(d, ornamentDistance[i+stride] + 1);
+            if (x < nx && y < ny) d = Math.min(d, ornamentDistance[i+stride+1] + diag);
+            if (x > 0 && y < ny) d = Math.min(d, ornamentDistance[i+stride-1] + diag);
+            ornamentDistance[i] = d;
+        }
+    }
+
+    const faceZ = side === 'back' ? stoneBox.min.z : stoneBox.max.z;
+    const cutterTopZ = faceZ + (side === 'back' ? -1 : 1) * Math.max(0.001, depthMeters * 0.15);
+    const cosRotation = Math.cos(rotation);
+    const sinRotation = Math.sin(rotation);
+    const rotatePoint = (x, y) => {
+        const dx = x - centerX, dy = y - centerY;
+        return { x: centerX + dx * cosRotation - dy * sinRotation,
+                 y: centerY + dx * sinRotation + dy * cosRotation };
+    };
+    const vertexAt = (gx, gy, value, gray) => {
+        const px = gx / nx, py = gy / ny;
+        const point = rotatePoint(centerX + width * (px - 0.5), centerY + height * (0.5 - py));
+        let bottomDepth;
+        if (ornamentMode) {
+            const gx0 = Math.max(0, Math.min(nx, Math.round(gx)));
+            const gy0 = Math.max(0, Math.min(ny, Math.round(gy)));
+            const dist = ornamentDistance[gy0 * stride + gx0];
+            const bevelRadius = Math.max(3, Math.min(14, Math.round(Math.min(nx, ny) * 0.035)));
+            const t = Math.max(0, Math.min(1, dist / bevelRadius));
+            const smooth = t * t * (3 - 2 * t);
+            const tone = Math.max(0, Math.min(1, (gray - grayLow) / Math.max(0.001, grayHigh - grayLow)));
+            const toneCut = invert ? tone : 1 - tone;
+            // У границы — глубокая разделительная канавка; в центре — более мелкая
+            // выборка, поэтому элементы визуально остаются выпуклыми.
+            bottomDepth = 0.00015 + depthMeters * (0.82 - 0.48 * smooth + 0.16 * toneCut);
+            bottomDepth = Math.max(depthMeters * 0.22, Math.min(depthMeters * 0.98, bottomDepth));
+        } else {
+            const level = (invert ? 1 - gray : gray);
+            bottomDepth = 0.00015 + Math.max(0, level) * depthMeters;
+        }
+        return { x: point.x, y: point.y, s: value, gray, depth: bottomDepth, u: px, v: 1 - py, gx, gy };
+    };
+    const interpolate = (a, b) => {
+        const den = b.s - a.s;
+        const t = Math.max(0, Math.min(1, Math.abs(den) < 1e-9 ? 0.5 : (threshold - a.s) / den));
+        return {
+            x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t,
+            s: threshold, gray: a.gray + (b.gray - a.gray) * t,
+            depth: a.depth + (b.depth - a.depth) * t,
+            u: a.u + (b.u - a.u) * t, v: a.v + (b.v - a.v) * t,
+            gx: a.gx + (b.gx - a.gx) * t, gy: a.gy + (b.gy - a.gy) * t
+        };
+    };
+    const positions = [], uvs = [], indices = [];
+    // Two numeric-key maps avoid allocating large strings for every grid vertex.
+    // The stride is larger than the maximum quantized gy, so the pair is collision-free.
+    const vertexCache = { top: new Map(), bottom: new Map() };
+    const vertexKeyStride = (ny + 1) * 100000 + 1;
+    const gridVertexCache = new Array(scalar.length);
+    const getGridVertex = (gx, gy) => {
+        const gridIndex = gy * stride + gx;
+        let vertex = gridVertexCache[gridIndex];
+        if (vertex === undefined) {
+            vertex = vertexAt(gx, gy, scalar[gridIndex], grayValues[gridIndex]);
+            gridVertexCache[gridIndex] = vertex;
+        }
+        return vertex;
+    };
+    const addVertex = (v, isBottom) => {
+        const cache = isBottom ? vertexCache.bottom : vertexCache.top;
+        const key = Math.round(v.gx * 100000) * vertexKeyStride + Math.round(v.gy * 100000);
+        const cached = cache.get(key);
+        if (cached !== undefined) return cached;
+        const index = positions.length / 3;
+        positions.push(v.x, v.y, isBottom
+            ? faceZ + (side === 'back' ? 1 : -1) * v.depth
+            : cutterTopZ);
+        uvs.push(v.u, v.v);
+        cache.set(key, index);
+        return index;
+    };
+    // Стенки создаём только по интерполированному контуру рисунка.
+    // Край исходного прямоугольного холста никогда не становится частью рельефа.
+    const isBoundaryEdge = (a, b) =>
+        Math.abs(a.s - threshold) < 1e-5 && Math.abs(b.s - threshold) < 1e-5;
+    const emitClippedTriangle = (triangle) => {
+        let poly = triangle;
+        const output = [];
+        for (let i = 0; i < poly.length; i++) {
+            const a = poly[i], b = poly[(i + 1) % poly.length];
+            const ina = a.s >= threshold, inb = b.s >= threshold;
+            if (ina && inb) output.push(b);
+            else if (ina && !inb) output.push(interpolate(a, b));
+            else if (!ina && inb) { output.push(interpolate(a, b)); output.push(b); }
+        }
+        if (output.length < 3) return;
+        const top = output.map(v => addVertex(v, false));
+        const bottom = output.map(v => addVertex(v, true));
+        for (let i = 1; i < output.length - 1; i++) {
+            indices.push(top[0], top[i], top[i + 1]);
+            indices.push(bottom[0], bottom[i + 1], bottom[i]);
+        }
+        for (let i = 0; i < output.length; i++) {
+            const j = (i + 1) % output.length;
+            if (!isBoundaryEdge(output[i], output[j])) continue;
+            indices.push(top[i], bottom[i], top[j], top[j], bottom[i], bottom[j]);
+        }
+    };
+
+    // Lossless cap reduction + tolerance-bounded heightfield simplification.
+    // Each 2x2 cell block keeps all eight perimeter samples. Its flat top cap
+    // uses six triangles instead of eight. The bottom may use the same compact
+    // triangulation only when the omitted centre sample is within a tiny
+    // millimetre tolerance of the interpolation across the centre diagonal.
+    const BLOCK_FACES = [
+        [0, 1, 7], [1, 2, 3], [1, 3, 5],
+        [1, 5, 7], [3, 4, 5], [5, 6, 7]
+    ];
+    const BLOCK_RING_OFFSETS = [
+        [0, 0], [0, 1], [0, 2], [1, 2],
+        [2, 2], [2, 1], [2, 0], [1, 0]
+    ];
+    const heightErrorTolerance = Math.max(0.000005, depthMeters * 0.0005);
+    let fullMaskBlocks = 0;
+    let simplifiedBottomBlocks = 0;
+    const addBottomTriangle = (a, b, c) => {
+        const ia = addVertex(a, true);
+        const ib = addVertex(b, true);
+        const ic = addVertex(c, true);
+        // Reverse the top-facing winding for the bottom surface.
+        indices.push(ia, ic, ib);
+    };
+    const addBlockTop = ring => {
+        const top = ring.map(v => addVertex(v, false));
+        for (const face of BLOCK_FACES) indices.push(top[face[0]], top[face[1]], top[face[2]]);
+    };
+    const addBlockBottom = ring => {
+        const bottom = ring.map(v => addVertex(v, true));
+        for (const face of BLOCK_FACES) indices.push(bottom[face[0]], bottom[face[2]], bottom[face[1]]);
+    };
+    const processInteriorBlock = (bx, by) => {
+        if (bx + 2 > nx || by + 2 > ny) return false;
+        // Only blocks wholly inside the silhouette are eligible. Boundary
+        // blocks retain the original per-triangle clipping and side walls.
+        for (let dy = 0; dy <= 2; dy++) for (let dx = 0; dx <= 2; dx++) {
+            const sample = scalar[(by + dy) * stride + bx + dx];
+            if (sample <= threshold + 1e-6) return false;
+        }
+        const ring = BLOCK_RING_OFFSETS.map(([dx, dy]) => getGridVertex(bx + dx, by + dy));
+        // Only collapse the centre sample when all nine height samples in
+        // this block stay close to one affine plane. This bounds the difference
+        // between the old and new piecewise-linear heightfields everywhere,
+        // not just at the omitted centre point.
+        const p00 = ring[0].depth;
+        const p20 = ring[6].depth;
+        const p02 = ring[2].depth;
+        const planeTolerance = heightErrorTolerance * 0.5;
+        let maxPlaneDeviation = 0;
+        for (let dy = 0; dy <= 2; dy++) {
+            for (let dx = 0; dx <= 2; dx++) {
+                const sample = getGridVertex(bx + dx, by + dy).depth;
+                const planeDepth = p00 + (p20 - p00) * (dx / 2) + (p02 - p00) * (dy / 2);
+                maxPlaneDeviation = Math.max(maxPlaneDeviation, Math.abs(sample - planeDepth));
+            }
+        }
+        const simplifyBottom = maxPlaneDeviation <= planeTolerance;
+
+        // The cap is exactly planar, so this local triangulation does not
+        // approximate its shape or alter the relief boundary.
+        addBlockTop(ring);
+        if (simplifyBottom) {
+            addBlockBottom(ring);
+            simplifiedBottomBlocks++;
+        } else {
+            // Preserve all nine height samples when the centre deviation is
+            // above tolerance; only the redundant flat cap was simplified.
+            const a = getGridVertex(bx, by);
+            const b = getGridVertex(bx + 1, by);
+            const c = getGridVertex(bx + 1, by + 1);
+            const d = getGridVertex(bx, by + 1);
+            addBottomTriangle(a, d, b);
+            addBottomTriangle(b, d, c);
+            const e = getGridVertex(bx + 2, by);
+            const f = getGridVertex(bx + 2, by + 1);
+            addBottomTriangle(b, c, e);
+            addBottomTriangle(e, c, f);
+            const g = getGridVertex(bx, by + 2);
+            const h = getGridVertex(bx + 1, by + 2);
+            addBottomTriangle(d, g, c);
+            addBottomTriangle(c, g, h);
+            const j = getGridVertex(bx + 2, by + 2);
+            const i = getGridVertex(bx + 2, by + 1);
+            addBottomTriangle(c, h, i);
+            addBottomTriangle(i, h, j);
+        }
+        fullMaskBlocks++;
+        return true;
+    };
+
+    for (let by = 0; by < ny; by += 2) for (let bx = 0; bx < nx; bx += 2) {
+        if (processInteriorBlock(bx, by)) continue;
+        const yEnd = Math.min(ny, by + 2);
+        const xEnd = Math.min(nx, bx + 2);
+        for (let y = by; y < yEnd; y++) for (let x = bx; x < xEnd; x++) {
+            const a = getGridVertex(x, y);
+            const b = getGridVertex(x + 1, y);
+            const c = getGridVertex(x + 1, y + 1);
+            const d = getGridVertex(x, y + 1);
+            emitClippedTriangle([a, d, b]);
+            emitClippedTriangle([b, d, c]);
+        }
+    }
+    if (!indices.length) throw new Error('Не удалось построить поверхность рельефа.');
+    const compactPositions = new Float32Array(positions);
+    const compactUvs = new Float32Array(uvs);
+    const compactIndices = new Uint32Array(indices);
+    if (side === 'back') {
+        for (let i = 0; i < compactIndices.length; i += 3) {
+            const swap = compactIndices[i + 1]; compactIndices[i + 1] = compactIndices[i + 2]; compactIndices[i + 2] = swap;
+        }
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.BufferAttribute(compactPositions, 3));
+    geometry.setAttribute('uv', new THREE.BufferAttribute(compactUvs, 2));
+    geometry.setIndex(new THREE.BufferAttribute(compactIndices, 1));
+    geometry.addGroup(0, compactIndices.length, 0);
+    const actualTriangleCount = Math.floor(compactIndices.length / 3);
+    const savedTriangleCount = fullMaskBlocks * 2 + simplifiedBottomBlocks * 2;
+    geometry.userData.imageReliefOptimization = {
+        fullMaskBlocks,
+        simplifiedBottomBlocks,
+        heightErrorTolerance,
+        actualTriangleCount,
+        estimatedOriginalTriangleCount: actualTriangleCount + savedTriangleCount,
+        savedTriangleCount
+    };
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    return geometry;
+}
+function removeImageRelief() {
+    const removeButton = document.getElementById('btn-remove-image-relief');
+    // The relief is part of the stone geometry. Restore the saved pre-relief
+    // geometry through the normal undo path, but only while this relief is
+    // still the latest geometry operation.
+    if (!imageReliefUndoState) {
+        document.getElementById('relief-status').textContent = 'Нет сохранённого состояния рельефа для удаления.';
+        removeButton.disabled = true;
+        return;
+    }
+    const activeUndoStack = imageReliefUndoState && imageReliefUndoState.mesh ? assemblyUndoStack : undoStack;
+    if (activeUndoStack[activeUndoStack.length - 1] !== imageReliefUndoState) {
+        document.getElementById('relief-status').textContent =
+            'После рельефа были выполнены другие операции. Сначала отмени их кнопкой «Отменить», затем удали рельеф.';
+        return;
+    }
+    if(activeUndoStack===assemblyUndoStack){
+        const state=activeUndoStack.pop();
+        if(state&&state.mesh&&state.geometry){state.mesh.geometry.dispose();state.mesh.geometry=state.geometry;state.mesh.material=state.material;state.mesh.geometry.computeBoundingBox();state.mesh.geometry.computeBoundingSphere();}
+    } else document.getElementById('btn-undo').click();
+    imageReliefUndoState = null;
+    removeButton.disabled = true;
+    document.getElementById('relief-status').textContent = 'Рельеф удалён. Исходная геометрия стелы восстановлена.';
+}
+
+document.getElementById('btn-build-image-relief').addEventListener('click', async () => {
+    if (!stellaMesh) return document.getElementById('relief-status').textContent = 'Сначала создай стелу.';
+    if (!reliefSourceImage) return document.getElementById('relief-status').textContent = 'Сначала выбери изображение.';
+    if (!csgAvailable) return document.getElementById('relief-status').textContent = 'Булев модуль не загружен — вырезание в камне недоступно.';
+    const buildButton = document.getElementById('btn-build-image-relief');
+    const removeButton = document.getElementById('btn-remove-image-relief');
+    buildButton.disabled = true;
+    removeButton.disabled = true;
+    try {
+        const reliefTotalStartedAt = performance.now();
+        stellaMesh.geometry.computeBoundingBox();
+        const cutterBuildStartedAt = performance.now();
+        const geometry = buildImageReliefCutterGeometry(
+            reliefSourceImage, stellaMesh.geometry.boundingBox,
+            Number(reliefDepthInput.value) / 1000,
+            Number(reliefSizeInput.value), Number(reliefBlurInput.value),
+            reliefInvertInput.checked, Number(reliefResolutionInput.value), getImageReliefPlacement()
+        );
+        const cutterBuildMs = performance.now() - cutterBuildStartedAt;
+        const cutterPositionCount = geometry.getAttribute('position')?.count || 0;
+        const cutterTriangleCount = geometry.index
+            ? Math.floor(geometry.index.count / 3)
+            : Math.floor(cutterPositionCount / 3);
+        log('[CSG PERF] cutter geometry build: ' + cutterBuildMs.toFixed(1) +
+            ' ms; vertices=' + cutterPositionCount.toLocaleString('ru-RU') +
+            '; triangles=' + cutterTriangleCount.toLocaleString('ru-RU'));
+        const geometryOptimization = geometry.userData && geometry.userData.imageReliefOptimization;
+        if (geometryOptimization) {
+            const reduction = geometryOptimization.estimatedOriginalTriangleCount > 0
+                ? geometryOptimization.savedTriangleCount / geometryOptimization.estimatedOriginalTriangleCount * 100
+                : 0;
+            log('[CSG PERF] local mesh reduction: saved=' +
+                geometryOptimization.savedTriangleCount.toLocaleString('ru-RU') +
+                ' triangles (' + reduction.toFixed(1) + '%); smoothBlocks=' +
+                geometryOptimization.simplifiedBottomBlocks.toLocaleString('ru-RU') +
+                '; fullMaskBlocks=' + geometryOptimization.fullMaskBlocks.toLocaleString('ru-RU') +
+                '; heightTolerance=' + (geometryOptimization.heightErrorTolerance * 1000).toFixed(3) + ' mm');
+        }
+        prepareImageReliefBVH(geometry);
+        const cutter = new Brush(geometry);
+        cutter.material = getCSGMaterials();
+        cutter.position.copy(stellaMesh.position);
+        cutter.quaternion.copy(stellaMesh.quaternion);
+        cutter.scale.copy(stellaMesh.scale);
+        cutter.updateMatrixWorld(true);
+
+        const vertices = geometry.getAttribute('position').count;
+        document.getElementById('relief-status').textContent =
+            'Подготовлен режущий объём (' + vertices.toLocaleString('ru-RU') +
+            ' вершин). Выполняется вычитание из тела стелы…';
+        const useAssemblyUndo = !!(selectedAssemblyTarget && !(assemblyItems.find(item => item.root === selectedAssemblyTarget) || {}).isPrimary);
+        const undoDepthBeforeRelief = useAssemblyUndo ? assemblyUndoStack.length : undoStack.length;
+        const ok = await runCSG([cutter], 'Рельеф по изображению', () => {
+            disposeImageReliefPreview();
+            const activeUndoStack = useAssemblyUndo ? assemblyUndoStack : undoStack;
+            imageReliefUndoState = activeUndoStack.length > undoDepthBeforeRelief ? activeUndoStack[activeUndoStack.length - 1] : null;
+            removeButton.disabled = !imageReliefUndoState;
+            document.getElementById('relief-status').textContent =
+                'Изображение вырезано непосредственно в геометрии стелы. Его можно удалить кнопкой «Удалить рельеф», пока не выполнены другие операции.';
+            setStatus('Рельеф выфрезерован в поверхности стелы.');
+        }, SUBTRACTION);
+        if (!ok) {
+            document.getElementById('relief-status').textContent =
+                'Не удалось выполнить вычитание. Проверь пересечение с лицевой поверхностью и доступность памяти.';
+        }
+        log('[CSG PERF] image relief total (including cutter build): ' +
+            (performance.now() - reliefTotalStartedAt).toFixed(1) + ' ms');
+    } catch (error) {
+        log('Рельеф по изображению: ' + error.message);
+        document.getElementById('relief-status').textContent = 'Ошибка построения: ' + error.message;
+    } finally {
+        buildButton.disabled = !stellaMesh || !reliefSourceImage;
+    }
+});
+document.getElementById('btn-remove-image-relief').addEventListener('click', removeImageRelief);
+
+/* END IMAGE RELIEF MODULE */
 
 /* ============================================================
    34. MOBILE MENU
