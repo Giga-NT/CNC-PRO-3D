@@ -5131,9 +5131,14 @@ async function runCSG(cutters, label, onSuccess, operation = null, onProgress = 
 
                 nextBrush.geometry.computeBoundingBox();
                 nextBrush.geometry.computeBoundingSphere();
+                const materialGroupSummary = (nextBrush.geometry.groups || []).reduce((acc, group) => {
+                    const key = String(group.materialIndex);
+                    acc[key] = (acc[key] || 0) + group.count;
+                    return acc;
+                }, {});
                 log('[CSG BATCH] next target normalized: indexCount=' +
                     (nextBrush.geometry.index ? nextBrush.geometry.index.count : 0) +
-                    '; groups=' + nextBrush.geometry.groups.length);
+                    '; groups=' + JSON.stringify(materialGroupSummary));
                 disposeCSGBrush(brush);
                 brush = nextBrush;
                 success++;
@@ -7391,7 +7396,12 @@ document.getElementById('btn-cut-selected-reliefs').addEventListener('click', as
             const item=chosen[i];label.textContent='Подготовка резца '+(i+1)+' из '+chosen.length+': '+item.name;
             const geometry=buildImageReliefCutterGeometry(item.image,stellaMesh.geometry.boundingBox,item.settings.depth/1000,item.settings.size,item.settings.blur,item.settings.invert,item.settings.resolution,item.settings.placement);
             prepareImageReliefBVH(geometry);
-            const cutter=new Brush(geometry);cutter.material=getCSGMaterials();cutter.position.copy(stellaMesh.position);cutter.quaternion.copy(stellaMesh.quaternion);cutter.scale.copy(stellaMesh.scale);cutter.updateMatrixWorld(true);cutters.push(cutter);
+            const cutter=new Brush(geometry);
+            // Image cutter must contribute only the rough-cut material.
+            // Passing the stone's textured front/side materials as cutter
+            // slots lets CSG propagate those slots onto newly generated faces.
+            cutter.material=[getRoughMaterial(params.material)];
+            cutter.position.copy(stellaMesh.position);cutter.quaternion.copy(stellaMesh.quaternion);cutter.scale.copy(stellaMesh.scale);cutter.updateMatrixWorld(true);cutters.push(cutter);
             log('[CSG BATCH] cutter '+(i+1)+'/'+chosen.length+' '+item.name+': '+geometry.getAttribute('position').count.toLocaleString('ru-RU')+' vertices');
             fill.style.width=((i+1)/chosen.length*10).toFixed(0)+'%';
             label.textContent='Подготовлено резцов '+(i+1)+' из '+chosen.length;
