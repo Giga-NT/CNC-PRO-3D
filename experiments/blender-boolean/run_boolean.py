@@ -99,9 +99,18 @@ def topology_diagnostics(obj, max_samples=12):
         linked = len(edge.link_faces)
         incidence[str(linked)] = incidence.get(str(linked), 0) + 1
         if linked != 2 and len(suspicious_edges) < max_samples:
+            face_details = []
+            for face in edge.link_faces:
+                face_details.append({
+                    "face_index": int(face.index),
+                    "area": round(float(face.calc_area()), 12),
+                    "normal": [round(float(face.normal[i]), 6) for i in range(3)],
+                    "vertices": [[round(float(v.co[i]), 6) for i in range(3)] for v in face.verts],
+                })
             suspicious_edges.append({
                 "linked_faces": linked,
                 "vertices": [[round(float(v.co[i]), 6) for i in range(3)] for v in edge.verts],
+                "linked_face_details": face_details,
             })
 
     # Count connected face islands by traversing face adjacency across shared edges.
@@ -155,6 +164,67 @@ def topology_diagnostics(obj, max_samples=12):
     bm.free()
     return result
 
+
+
+def boolean_probe(target_source, cutter_source, operation, flip_cutter=False):
+    target = target_source.copy()
+    target.data = target_source.data.copy()
+    bpy.context.collection.objects.link(target)
+    cutter = cutter_source.copy()
+    cutter.data = cutter_source.data.copy()
+    bpy.context.collection.objects.link(cutter)
+    target.name = "Probe_Target_" + operation + ("_Flipped" if flip_cutter else "")
+    cutter.name = "Probe_Cutter_" + operation + ("_Flipped" if flip_cutter else "")
+
+    if flip_cutter:
+        bm = bmesh.new()
+        bm.from_mesh(cutter.data)
+        bmesh.ops.reverse_faces(bm, faces=list(bm.faces))
+        bm.to_mesh(cutter.data)
+        bm.free()
+        cutter.data.update()
+
+    modifier = target.modifiers.new(name="Probe_" + operation, type="BOOLEAN")
+    modifier.operation = operation
+    modifier.solver = "EXACT"
+    modifier.object = cutter
+    bpy.ops.object.select_all(action="DESELECT")
+    target.select_set(True)
+    bpy.context.view_layer.objects.active = target
+    bpy.context.view_layer.update()
+    started = time.perf_counter()
+    bpy.ops.object.modifier_apply(modifier=modifier.name)
+    elapsed = (time.perf_counter() - started) * 1000.0
+    stats = mesh_stats(target)
+    source_bounds = mesh_stats(target_source)["world_bounds"]
+    output = {
+        "operation": operation,
+        "cutter_normals_flipped": flip_cutter,
+        "boolean_ms": round(elapsed, 3),
+        "result": stats,
+        "result_has_target_bounds": bool(
+            stats["world_bounds"] and source_bounds and
+            stats["world_bounds"]["min"] == source_bounds["min"] and
+            stats["world_bounds"]["max"] == source_bounds["max"]
+        ),
+    }
+    bpy.data.objects.remove(target, do_unlink=True)
+    bpy.data.objects.remove(cutter, do_unlink=True)
+    return output
+
+
+def operand_boolean_probes(target, cutter):
+    probes = []
+    for operation, flip in (("DIFFERENCE", False), ("DIFFERENCE", True), ("INTERSECT", False), ("UNION", False)):
+        try:
+            probes.append(boolean_probe(target, cutter, operation, flip))
+        except Exception as exc:
+            probes.append({
+                "operation": operation,
+                "cutter_normals_flipped": flip,
+                "error": str(exc),
+            })
+    return probes
 
 def simple_cube_boolean_test():
     """Control test: subtract one closed cube from another using Blender Exact."""
@@ -234,6 +304,7 @@ def main():
         "target_topology_before_recalc": topology_diagnostics(target),
         "cutter_topology_before_recalc": topology_diagnostics(cutter),
         "simple_cube_control": simple_cube_boolean_test(),
+        "operand_boolean_probes": operand_boolean_probes(target, cutter),
     }
 
     print("[BLENDER BOOLEAN] Input stats before normal recalculation:")
