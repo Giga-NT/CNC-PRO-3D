@@ -87,7 +87,9 @@ def recalculate_normals(obj):
     bm = bmesh.new()
     bm.from_mesh(obj.data)
     result = bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
-    affected = len(result.get("faces", []))
+    # Blender versions may return None for this operator; count the mesh faces
+    # independently so diagnostics remain compatible across 4.x/5.x.
+    affected = len(result.get("faces", [])) if isinstance(result, dict) else len(bm.faces)
     bm.to_mesh(obj.data)
     bm.free()
     obj.data.update()
