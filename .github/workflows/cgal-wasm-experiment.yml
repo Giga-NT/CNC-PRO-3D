@@ -1,0 +1,42 @@
+name: CGAL WASM experiment
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cam-native-rebuild
+    paths:
+      - "experiments/cgal-wasm/**"
+      - ".github/workflows/cgal-wasm-experiment.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Boost headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libboost-dev
+
+      - name: Install Emscripten SDK
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+
+      - name: Configure CGAL WASM
+        run: emcmake cmake -S experiments/cgal-wasm -B build/cgal-wasm -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build CGAL WASM
+        run: cmake --build build/cgal-wasm --parallel 2
+
+      - name: Publish test module artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cgal-wasm-experiment
+          path: experiments/cgal-wasm/dist/
+          if-no-files-found: error
+          retention-days: 14
