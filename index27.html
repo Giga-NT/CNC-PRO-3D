@@ -1428,8 +1428,11 @@ function normalizeForCSG(geometry, materialIndex, preserveGroups = false) {
     }
 
     for (const grp of savedGroups) {
-        const start = wasIndexed ? grp.start * 3 : grp.start;
-        const count = wasIndexed ? grp.count * 3 : grp.count;
+        // BufferGeometry groups use index offsets/counts even before toNonIndexed().
+        // toNonIndexed() preserves these ranges, so multiplying by 3 corrupts
+        // material boundaries on every subsequent CSG normalization.
+        const start = grp.start;
+        const count = grp.count;
         // MeshBVH 0.7.0 crashes on empty BVH roots: countNodes() descends
         // into missing children when a group contains zero triangles.
         // CSG groups must contain complete triangles and stay inside the index range.
