@@ -464,10 +464,16 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
     <div class="control-group" id="image-relief-module">
         <h3>🗿 Рельеф по изображению</h3>
         <div class="draw-instructions">Загрузи рисунок или фотографию. Автоматически убирается фон по прозрачности или цвету углов изображения — вырезается только сам объект. Рельеф формируется непосредственно в камне. После операции можно отменить изменение кнопкой «Отменить».</div>
-        <label style="display:block;margin:7px 0;">Изображение (PNG, JPG, WebP)
-            <input type="file" id="relief-image-file" accept="image/png,image/jpeg,image/webp" style="width:100%;margin-top:5px;">
-        </label>
-        <div id="relief-image-name" class="import-status">Изображение не выбрано</div>
+        <div class="btn-row" style="margin:7px 0;">
+            <button type="button" id="btn-add-relief-image" class="primary">＋ Добавить рисунок</button>
+            <input type="file" id="relief-image-file" accept="image/png,image/jpeg,image/webp" style="display:none;">
+        </div>
+        <div id="relief-image-name" class="import-status">Рисунки не добавлены</div>
+        <div id="relief-image-list" style="display:grid;gap:5px;margin:6px 0;"></div>
+        <div class="btn-row">
+            <button type="button" id="btn-relief-select-all">Выбрать все</button>
+            <button type="button" id="btn-relief-select-none">Снять выбор</button>
+        </div>
         <label>Тип рельефа:
             <select id="relief-mode" style="width:100%;margin-top:4px;">
                 <option value="heightmap" selected>Объёмное изображение (акант, скульптура)</option>
@@ -510,10 +516,18 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
         </label>
         <div class="draw-instructions">Поверхностный тест — экспериментальный визуальный режим. Он не меняет исходную сетку и не влияет на STL-экспорт.</div>
         <div class="btn-row" style="margin-top:8px;">
-            <button id="btn-build-image-relief" class="primary" disabled>🗿 Создать рельеф</button>
-            <button id="btn-remove-image-relief" class="danger" disabled>Удалить рельеф</button>
+            <button id="btn-build-image-relief" class="primary" disabled>👁 Обновить быстрый просмотр</button>
+            <button id="btn-remove-image-relief" class="danger" disabled>Удалить просмотр</button>
         </div>
-        <div id="relief-status" class="import-status">Сначала выбери изображение и создай стелу.</div>
+        <button type="button" id="btn-cut-selected-reliefs" class="success" disabled style="width:100%;margin-top:6px;">✂ Вырезать выбранные</button>
+        <div id="relief-batch-progress" style="display:none;margin-top:8px;padding:8px;background:var(--input-bg);border-radius:4px;">
+            <div id="relief-progress-label" style="font-size:11px;margin-bottom:5px;">Подготовка…</div>
+            <div style="height:7px;background:var(--border);border-radius:5px;overflow:hidden;">
+                <div id="relief-progress-fill" style="height:100%;width:0%;background:var(--success);transition:width .2s;"></div>
+            </div>
+            <div id="relief-progress-time" style="font-size:10px;margin-top:5px;opacity:.8;"></div>
+        </div>
+        <div id="relief-status" class="import-status">Добавь один или несколько рисунков.</div>
     </div>
 
     <div class="control-group">
@@ -6691,6 +6705,11 @@ let reliefSourceName = '';
 let imageReliefMesh = null;
 let imageReliefUndoState = null;
 let imageReliefSurfaceTestMesh = null;
+let imageReliefSurfaceTestMeshes = [];
+let reliefItems = [];
+let reliefActiveItemId = null;
+let reliefItemSequence = 0;
+let reliefBatchRunning = false;
 
 const reliefFileInput = document.getElementById('relief-image-file');
 const reliefDepthInput = document.getElementById('relief-depth');
@@ -6703,8 +6722,18 @@ const reliefWidthInput=document.getElementById('relief-width'), reliefRotationIn
 let imageReliefSide='front', imageReliefPreviewTexture=null;
 const reliefModeInput=document.getElementById('relief-mode');
 function getImageReliefPlacement(){return{x:Number(reliefPosXInput.value)||0,y:Number(reliefPosYInput.value)||0,width:Math.max(.01,Number(reliefWidthInput.value)||.30),rotation:Number(reliefRotationInput.value)||0,side:imageReliefSide,mode:reliefModeInput.value};}
+function getReliefSettings(){return{depth:Number(reliefDepthInput.value),size:Number(reliefSizeInput.value),blur:Number(reliefBlurInput.value),invert:!!reliefInvertInput.checked,resolution:Number(reliefResolutionInput.value),placement:getImageReliefPlacement()};}
+function getActiveReliefItem(){return reliefItems.find(item=>item.id===reliefActiveItemId)||null;}
+function saveActiveReliefSettings(){const item=getActiveReliefItem();if(!item||item.cut)return;item.settings=getReliefSettings();updateImageReliefPreview();}
+function loadReliefItem(item){if(!item)return;reliefActiveItemId=item.id;reliefSourceImage=item.image;reliefSourceName=item.name;const q=item.settings;reliefDepthInput.value=q.depth;reliefSizeInput.value=q.size;reliefBlurInput.value=q.blur;reliefInvertInput.checked=q.invert;reliefResolutionInput.value=q.resolution;reliefPosXInput.value=q.placement.x;reliefPosYInput.value=q.placement.y;reliefWidthInput.value=q.placement.width;reliefRotationInput.value=q.placement.rotation;imageReliefSide=q.placement.side;reliefModeInput.value=q.placement.mode;document.getElementById('relief-side-front').classList.toggle('active-tool',imageReliefSide==='front');document.getElementById('relief-side-back').classList.toggle('active-tool',imageReliefSide==='back');updateReliefControls();document.getElementById('relief-image-name').textContent=item.name+' · '+item.image.naturalWidth+' × '+item.image.naturalHeight;renderReliefItemList();updateImageReliefPreview();}
+function renderReliefItemList(){const host=document.getElementById('relief-image-list');host.innerHTML='';for(const item of reliefItems){const row=document.createElement('div');row.style.cssText='display:flex;align-items:center;gap:6px;padding:6px;background:var(--input-bg);border:1px solid '+(item.id===reliefActiveItemId?'var(--accent)':'var(--border)')+';border-radius:4px;';const check=document.createElement('input');check.type='checkbox';check.checked=item.selected;check.disabled=!!item.cut||reliefBatchRunning;check.title='Включить в пакетную резку';check.addEventListener('change',()=>{item.selected=check.checked;updateReliefBatchButtons();});const select=document.createElement('button');select.type='button';select.textContent=item.name+(item.cut?' · вырезан':'');select.style.cssText='flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;margin:0;';select.disabled=reliefBatchRunning;select.addEventListener('click',()=>loadReliefItem(item));const del=document.createElement('button');del.type='button';del.textContent='✕';del.className='danger';del.style.cssText='flex:0 0 28px;margin:0;padding:4px;';del.disabled=reliefBatchRunning;del.addEventListener('click',()=>removeReliefItem(item.id));row.append(check,select,del);host.appendChild(row);}document.getElementById('relief-image-name').textContent=reliefItems.length?('Добавлено рисунков: '+reliefItems.length):'Рисунки не добавлены';updateReliefBatchButtons();}
+function updateReliefBatchButtons(){const any=reliefItems.some(x=>x.selected&&!x.cut);document.getElementById('btn-cut-selected-reliefs').disabled=!any||!stellaMesh||!csgAvailable||reliefBatchRunning;document.getElementById('btn-build-image-relief').disabled=!reliefItems.length||!stellaMesh||reliefBatchRunning;document.getElementById('btn-remove-image-relief').disabled=!imageReliefSurfaceTestMeshes.length||reliefBatchRunning;}
+function removeReliefItem(id){const i=reliefItems.findIndex(x=>x.id===id);if(i<0)return;const item=reliefItems[i];if(item.image&&item.image.__objectUrl)URL.revokeObjectURL(item.image.__objectUrl);if(item.previewMesh){scene.remove(item.previewMesh);item.previewMesh.geometry.dispose();item.previewMesh.material.dispose();}if(item.surfaceMesh){item.surfaceMesh.parent?.remove(item.surfaceMesh);item.surfaceMesh.geometry.dispose();item.surfaceMesh.material.dispose();}reliefItems.splice(i,1);if(reliefActiveItemId===id){const next=reliefItems[0];reliefActiveItemId=null;reliefSourceImage=null;if(next)loadReliefItem(next);}renderReliefItemList();updateImageReliefPreview();}
+document.getElementById('btn-add-relief-image').addEventListener('click',()=>reliefFileInput.click());
+document.getElementById('btn-relief-select-all').addEventListener('click',()=>{reliefItems.forEach(x=>{if(!x.cut)x.selected=true;});renderReliefItemList();});
+document.getElementById('btn-relief-select-none').addEventListener('click',()=>{reliefItems.forEach(x=>x.selected=false);renderReliefItemList();});
 reliefModeInput.addEventListener('change',()=>{document.getElementById('relief-mode-help').textContent=reliefModeInput.value==='ornament'?'Для плоской графики: контуры становятся более глубокими, внутренние области — выпуклыми; яркость добавляет небольшую вариацию глубины.':'Для фотографий и готовых grayscale-карт высот сохраняет перепады яркости.';});
-function disposeImageReliefPreview(){if(imageReliefMesh){scene.remove(imageReliefMesh);imageReliefMesh.geometry?.dispose();imageReliefMesh.material?.dispose();imageReliefMesh=null;}if(imageReliefPreviewTexture){imageReliefPreviewTexture.dispose();imageReliefPreviewTexture=null;}}
+function disposeImageReliefPreview(){for(const item of reliefItems){if(item.previewMesh){scene.remove(item.previewMesh);item.previewMesh.geometry?.dispose();item.previewMesh.material?.dispose();item.previewMesh=null;}}if(imageReliefMesh){scene.remove(imageReliefMesh);imageReliefMesh.geometry?.dispose();imageReliefMesh.material?.dispose();imageReliefMesh=null;}if(imageReliefPreviewTexture){imageReliefPreviewTexture.dispose();imageReliefPreviewTexture=null;}}
 function makeImageReliefPreviewTexture(image){
  const canvas=document.createElement('canvas');canvas.width=512;canvas.height=Math.max(64,Math.round(512*image.naturalHeight/image.naturalWidth));
  const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(image,0,0,canvas.width,canvas.height);
@@ -6715,21 +6744,21 @@ function makeImageReliefPreviewTexture(image){
  ctx.putImageData(frame,0,0);const texture=new THREE.CanvasTexture(canvas);texture.colorSpace=THREE.SRGBColorSpace;return texture;
 }
 function updateImageReliefPreview(){
- if(!reliefSourceImage||!stellaMesh?.geometry)return;
- stellaMesh.geometry.computeBoundingBox();const box=stellaMesh.geometry.boundingBox,p=getImageReliefPlacement(),back=p.side==='back';
- const width=p.width,height=width/(reliefSourceImage.naturalWidth/reliefSourceImage.naturalHeight);
- if(!imageReliefMesh){imageReliefPreviewTexture=makeImageReliefPreviewTexture(reliefSourceImage);imageReliefMesh=new THREE.Mesh(new THREE.PlaneGeometry(width,height),new THREE.MeshBasicMaterial({map:imageReliefPreviewTexture,transparent:true,opacity:.82,depthWrite:false,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:-2}));imageReliefMesh.name='Image relief placement preview';imageReliefMesh.renderOrder=20;scene.add(imageReliefMesh);}
- else{imageReliefMesh.geometry.dispose();imageReliefMesh.geometry=new THREE.PlaneGeometry(width,height);}
+ if(!stellaMesh?.geometry)return;
+ stellaMesh.geometry.computeBoundingBox();const box=stellaMesh.geometry.boundingBox;
+ for(const item of reliefItems){const p=item.settings.placement,image=item.image,back=p.side==='back',width=p.width,height=width/(image.naturalWidth/image.naturalHeight);
+ if(!item.previewMesh){const texture=makeImageReliefPreviewTexture(image);item.previewMesh=new THREE.Mesh(new THREE.PlaneGeometry(width,height),new THREE.MeshBasicMaterial({map:texture,transparent:true,opacity:.82,depthWrite:false,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:-2}));item.previewMesh.name='Image relief placement preview: '+item.name;item.previewMesh.renderOrder=20;item.previewMesh.userData.previewTexture=texture;scene.add(item.previewMesh);}
+ else{item.previewMesh.geometry.dispose();item.previewMesh.geometry=new THREE.PlaneGeometry(width,height);}
  const localPos=new THREE.Vector3(p.x,p.y,back?box.min.z-.001:box.max.z+.001).multiply(stellaMesh.scale).applyQuaternion(stellaMesh.quaternion).add(stellaMesh.position);
- imageReliefMesh.position.copy(localPos);imageReliefMesh.quaternion.copy(stellaMesh.quaternion).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0,back?Math.PI:0,p.rotation*Math.PI/180)));
- imageReliefMesh.scale.copy(stellaMesh.scale);imageReliefMesh.updateMatrixWorld(true);
+ item.previewMesh.position.copy(localPos);item.previewMesh.quaternion.copy(stellaMesh.quaternion).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0,back?Math.PI:0,p.rotation*Math.PI/180)));
+ item.previewMesh.scale.copy(stellaMesh.scale);item.previewMesh.updateMatrixWorld(true);}
 }
 function syncReliefWidthFromPercent(){
  if(!stellaMesh||!reliefSourceImage)return;stellaMesh.geometry.computeBoundingBox();const box=stellaMesh.geometry.boundingBox;
  const aspect=reliefSourceImage.naturalWidth/reliefSourceImage.naturalHeight;
  reliefWidthInput.value=Math.max(.01,Math.min((box.max.x-box.min.x)*Number(reliefSizeInput.value)/100,(box.max.y-box.min.y)*.68*aspect)).toFixed(3);
 }
-[reliefPosXInput,reliefPosYInput,reliefWidthInput,reliefRotationInput,reliefDepthInput,reliefSizeInput,reliefBlurInput,reliefInvertInput,reliefResolutionInput].forEach(input=>input.addEventListener('input',()=>{updateReliefControls();if(input===reliefSizeInput)syncReliefWidthFromPercent();updateImageReliefPreview();}));
+[reliefPosXInput,reliefPosYInput,reliefWidthInput,reliefRotationInput,reliefDepthInput,reliefSizeInput,reliefBlurInput,reliefInvertInput,reliefResolutionInput].forEach(input=>input.addEventListener('input',()=>{updateReliefControls();if(input===reliefSizeInput)syncReliefWidthFromPercent();saveActiveReliefSettings();}));
 document.getElementById('relief-side-front').addEventListener('click',()=>{imageReliefSide='front';document.getElementById('relief-side-front').classList.add('active-tool');document.getElementById('relief-side-back').classList.remove('active-tool');updateImageReliefPreview();});
 document.getElementById('relief-side-back').addEventListener('click',()=>{imageReliefSide='back';document.getElementById('relief-side-back').classList.add('active-tool');document.getElementById('relief-side-front').classList.remove('active-tool');updateImageReliefPreview();});
 
@@ -6746,30 +6775,23 @@ updateReliefControls();
 
 reliefFileInput.addEventListener('change', event => {
     const file = event.target.files && event.target.files[0];
+    event.target.value = '';
     if (!file) return;
     if (!/^image\/(png|jpeg|webp)$/.test(file.type)) {
         document.getElementById('relief-status').textContent = 'Формат не поддерживается. Выбери PNG, JPG или WebP.';
-        event.target.value = '';
         return;
     }
     const url = URL.createObjectURL(file);
     const image = new Image();
     image.onload = () => {
-        if (reliefSourceImage && reliefSourceImage.__objectUrl) URL.revokeObjectURL(reliefSourceImage.__objectUrl);
         image.__objectUrl = url;
-        reliefSourceImage = image;
-        reliefSourceName = file.name;
-        document.getElementById('relief-image-name').textContent =
-            file.name + ' · ' + image.naturalWidth + ' × ' + image.naturalHeight;
-        document.getElementById('btn-build-image-relief').disabled = !stellaMesh;
-        if(stellaMesh){syncReliefWidthFromPercent();updateImageReliefPreview();}
-        document.getElementById('relief-status').textContent =
-            stellaMesh ? 'Изображение загружено. Выставь положение, размер и поворот. Полупрозрачное изображение показывает место будущего рельефа.' : 'Изображение загружено. Сначала создай стелу.';
+        const item={id:++reliefItemSequence,name:file.name,image,selected:true,cut:false,settings:getReliefSettings(),previewMesh:null,surfaceMesh:null};
+        reliefItems.push(item);
+        loadReliefItem(item);
+        if(stellaMesh){syncReliefWidthFromPercent();saveActiveReliefSettings();updateImageReliefPreview();}
+        document.getElementById('relief-status').textContent='Рисунок добавлен. Добавляй следующие кнопкой «Добавить рисунок»; параметры можно менять для выбранной строки.';
     };
-    image.onerror = () => {
-        URL.revokeObjectURL(url);
-        document.getElementById('relief-status').textContent = 'Не удалось прочитать изображение.';
-    };
+    image.onerror = () => {URL.revokeObjectURL(url);document.getElementById('relief-status').textContent='Не удалось прочитать изображение.';};
     image.src = url;
 });
 
@@ -7151,24 +7173,23 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
     return geometry;
 }
 function clearImageReliefSurfaceTest() {
-    if (!imageReliefSurfaceTestMesh) return false;
-    if (imageReliefSurfaceTestMesh.parent) imageReliefSurfaceTestMesh.parent.remove(imageReliefSurfaceTestMesh);
-    imageReliefSurfaceTestMesh.geometry.dispose();
-    if (Array.isArray(imageReliefSurfaceTestMesh.material)) imageReliefSurfaceTestMesh.material.forEach(m => m.dispose());
-    else imageReliefSurfaceTestMesh.material.dispose();
-    imageReliefSurfaceTestMesh = null;
-    return true;
+    let removed=false;
+    for(const mesh of imageReliefSurfaceTestMeshes){if(mesh.parent)mesh.parent.remove(mesh);mesh.geometry?.dispose();if(Array.isArray(mesh.material))mesh.material.forEach(m=>m.dispose());else mesh.material?.dispose();removed=true;}
+    imageReliefSurfaceTestMeshes=[];
+    if(imageReliefSurfaceTestMesh){if(imageReliefSurfaceTestMesh.parent)imageReliefSurfaceTestMesh.parent.remove(imageReliefSurfaceTestMesh);imageReliefSurfaceTestMesh.geometry?.dispose();imageReliefSurfaceTestMesh.material?.dispose();imageReliefSurfaceTestMesh=null;removed=true;}
+    reliefItems.forEach(item=>{item.surfaceMesh=null;});
+    updateReliefBatchButtons();
+    return removed;
 }
 
-function buildImageReliefSurfaceTest() {
-    if (!stellaMesh || !reliefSourceImage) throw new Error('Сначала создай стелу и выбери изображение.');
-    clearImageReliefSurfaceTest();
-    disposeImageReliefPreview();
+function buildImageReliefSurfaceTest(item) {
+    if (!stellaMesh || !item?.image) throw new Error('Сначала создай стелу и добавь рисунок.');
+    const sourceImage=item.image, itemSettings=item.settings, placement=itemSettings.placement;
     // Geometry and placement are expressed in the stela's local coordinates.
     stellaMesh.geometry.computeBoundingBox();
     const box = stellaMesh.geometry.boundingBox;
-    const placement = getImageReliefPlacement();
-    const aspect = reliefSourceImage.naturalWidth / reliefSourceImage.naturalHeight;
+    const placement = itemSettings.placement;
+    const aspect = sourceImage.naturalWidth / sourceImage.naturalHeight;
     const maxWidth = box.max.x - box.min.x;
     const maxHeight = box.max.y - box.min.y;
     const fitWidth = maxWidth * Number(reliefSizeInput.value) / 100;
@@ -7182,14 +7203,14 @@ function buildImageReliefSurfaceTest() {
     const side = placement.side === 'back' ? 'back' : 'front';
     const faceZ = side === 'back' ? box.min.z : box.max.z;
     const direction = side === 'back' ? 1 : -1;
-    const depth = Number(reliefDepthInput.value) / 1000;
-    const requestedResolution = Math.max(128, Math.min(640, Number(reliefResolutionInput.value) || 384));
+    const depth = Number(itemSettings.depth) / 1000;
+    const requestedResolution = Math.max(128, Math.min(640, Number(itemSettings.resolution) || 384));
     const nx = Math.max(96, Math.min(640, Math.round(requestedResolution * Math.min(1, aspect))));
     const ny = Math.max(96, Math.min(640, Math.round(requestedResolution / Math.max(0.01, aspect))));
     const canvas = document.createElement('canvas');
     canvas.width = nx + 1; canvas.height = ny + 1;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(reliefSourceImage, 0, 0, nx + 1, ny + 1);
+    ctx.drawImage(sourceImage, 0, 0, nx + 1, ny + 1);
     const imageData = ctx.getImageData(0, 0, nx + 1, ny + 1);
     const px = imageData.data;
     const corners = [];
@@ -7216,7 +7237,7 @@ function buildImageReliefSurfaceTest() {
         const dist=Math.hypot(px[k]-bg[0],px[k+1]-bg[1],px[k+2]-bg[2]);
         const mask=px[k+3]<250 ? alpha : Math.min(1,dist/255);
         const gray=(0.2126*px[k]+0.7152*px[k+1]+0.0722*px[k+2])/255;
-        const level=reliefInvertInput.checked ? 1-gray : gray;
+        const level=itemSettings.invert ? 1-gray : gray;
         const edge=Math.min(x,y,nx-x,ny-y);
         const fade=Math.max(0,Math.min(1,(edge-1)/Math.max(2,Math.min(nx,ny)*0.025)));
         vertexDepth[y*(nx+1)+x]=depth*level*mask*fade;
@@ -7258,6 +7279,8 @@ function buildImageReliefSurfaceTest() {
     mesh.frustumCulled=false;
     stellaMesh.add(mesh);
     imageReliefSurfaceTestMesh=mesh;
+    item.surfaceMesh=mesh;
+    imageReliefSurfaceTestMeshes.push(mesh);
     return {vertices:positions.length/3,triangles:indices.length/3,width,height,depth,nx,ny};
 }
 
@@ -7296,7 +7319,7 @@ function removeImageRelief() {
 
 document.getElementById('btn-build-image-relief').addEventListener('click', async () => {
     if (!stellaMesh) return document.getElementById('relief-status').textContent = 'Сначала создай стелу.';
-    if (!reliefSourceImage) return document.getElementById('relief-status').textContent = 'Сначала выбери изображение.';
+    if (!reliefItems.length) return document.getElementById('relief-status').textContent = 'Сначала добавь рисунки.';
     const buildMethod = document.getElementById('relief-build-method')?.value || 'csg';
     if (buildMethod === 'surface-test') {
         const buildButton = document.getElementById('btn-build-image-relief');
@@ -7305,25 +7328,32 @@ document.getElementById('btn-build-image-relief').addEventListener('click', asyn
         removeButton.disabled = true;
         try {
             const started = performance.now();
-            const result = buildImageReliefSurfaceTest();
+            clearImageReliefSurfaceTest();
+            disposeImageReliefPreview();
+            let totalTriangles=0;
+            const previewItems=reliefItems.filter(item=>!item.cut);
+            for(let i=0;i<previewItems.length;i++){
+                const item=previewItems[i];
+                const result=buildImageReliefSurfaceTest(item);
+                totalTriangles+=result.triangles;
+                log('[SURFACE TEST] '+(i+1)+'/'+previewItems.length+' '+item.name+': '+result.triangles.toLocaleString('ru-RU')+' triangles');
+            }
             removeButton.disabled = false;
             document.getElementById('relief-status').textContent =
-                'Поверхностный тест показан на стеле (только визуализация, исходная сетка не изменена). ' +
-                result.triangles.toLocaleString('ru-RU') + ' треугольников.';
-            log('[SURFACE TEST] build: ' + (performance.now()-started).toFixed(1) +
-                ' ms; vertices=' + result.vertices.toLocaleString('ru-RU') +
-                '; triangles=' + result.triangles.toLocaleString('ru-RU') +
-                '; depth=' + (result.depth*1000).toFixed(1) + ' mm');
+                'Быстрый поверхностный просмотр: '+previewItems.length+' рисунков, '+totalTriangles.toLocaleString('ru-RU')+' треугольников. Это визуальный тест, не геометрия для экспорта.';
+            log('[SURFACE TEST] batch preview: ' + (performance.now()-started).toFixed(1) + ' ms');
         } catch (error) {
             document.getElementById('relief-status').textContent = 'Ошибка поверхностного теста: ' + error.message;
             log('[SURFACE TEST] ' + error.stack);
         } finally {
-            buildButton.disabled = !stellaMesh || !reliefSourceImage;
+            buildButton.disabled = !stellaMesh || !reliefItems.length;
+            updateReliefBatchButtons();
         }
         return;
     }
-    clearImageReliefSurfaceTest();
     if (!csgAvailable) return document.getElementById('relief-status').textContent = 'Булев модуль не загружен — вырезание в камне недоступно.';
+    document.getElementById('relief-status').textContent='Для настоящей резки используй кнопку «Вырезать выбранные».';
+    return;
     const buildButton = document.getElementById('btn-build-image-relief');
     const removeButton = document.getElementById('btn-remove-image-relief');
     buildButton.disabled = true;
@@ -7392,10 +7422,60 @@ document.getElementById('btn-build-image-relief').addEventListener('click', asyn
         log('Рельеф по изображению: ' + error.message);
         document.getElementById('relief-status').textContent = 'Ошибка построения: ' + error.message;
     } finally {
-        buildButton.disabled = !stellaMesh || !reliefSourceImage;
+        buildButton.disabled = !stellaMesh || !reliefItems.length;
+        updateReliefBatchButtons();
     }
 });
-document.getElementById('btn-remove-image-relief').addEventListener('click', removeImageRelief);
+document.getElementById('btn-remove-image-relief').addEventListener('click',()=>{clearImageReliefSurfaceTest();document.getElementById('relief-status').textContent='Быстрый просмотр удалён. Геометрия стелы не изменялась.';});
+document.getElementById('btn-cut-selected-reliefs').addEventListener('click', async () => {
+    const chosen=reliefItems.filter(item=>item.selected&&!item.cut);
+    if(!stellaMesh)return document.getElementById('relief-status').textContent='Сначала создай стелу.';
+    if(!chosen.length)return document.getElementById('relief-status').textContent='Отметь галочками рисунки для резки.';
+    if(!csgAvailable)return document.getElementById('relief-status').textContent='Булев модуль не загружен.';
+    if(!confirm('Вырезать '+chosen.length+' выбранных рисунков по очереди? Неотмеченные рисунки будут удалены из списка после успешной резки.'))return;
+    reliefBatchRunning=true;renderReliefItemList();
+    const progress=document.getElementById('relief-batch-progress'),fill=document.getElementById('relief-progress-fill'),label=document.getElementById('relief-progress-label'),time=document.getElementById('relief-progress-time');
+    progress.style.display='block';fill.style.width='0%';
+    const started=performance.now(),cutters=[];
+    const useAssemblyUndo=!!(selectedAssemblyTarget&&!(assemblyItems.find(item=>item.root===selectedAssemblyTarget)||{}).isPrimary);
+    const undoDepthBefore=useAssemblyUndo?assemblyUndoStack.length:undoStack.length;
+    try{
+        stellaMesh.geometry.computeBoundingBox();
+        for(let i=0;i<chosen.length;i++){
+            const item=chosen[i];label.textContent='Подготовка резца '+(i+1)+' из '+chosen.length+': '+item.name;
+            const geometry=buildImageReliefCutterGeometry(item.image,stellaMesh.geometry.boundingBox,item.settings.depth/1000,item.settings.size,item.settings.blur,item.settings.invert,item.settings.resolution,item.settings.placement);
+            prepareImageReliefBVH(geometry);
+            const cutter=new Brush(geometry);cutter.material=getCSGMaterials();cutter.position.copy(stellaMesh.position);cutter.quaternion.copy(stellaMesh.quaternion);cutter.scale.copy(stellaMesh.scale);cutter.updateMatrixWorld(true);cutters.push(cutter);
+            log('[CSG BATCH] cutter '+(i+1)+'/'+chosen.length+' '+item.name+': '+geometry.getAttribute('position').count.toLocaleString('ru-RU')+' vertices');
+        }
+        const ok=await runCSG(cutters,'Пакетный рельеф ('+chosen.length+' рисунков)',()=>{
+            disposeImageReliefPreview();clearImageReliefSurfaceTest();
+            const selectedIds=new Set(chosen.map(x=>x.id));
+            reliefItems=reliefItems.filter(item=>{
+                if(selectedIds.has(item.id)){item.cut=true;item.selected=false;return true;}
+                if(item.image?.__objectUrl)URL.revokeObjectURL(item.image.__objectUrl);
+                if(item.previewMesh){scene.remove(item.previewMesh);item.previewMesh.geometry.dispose();item.previewMesh.material.dispose();}
+                return false;
+            });
+            if(!reliefItems.some(x=>x.id===reliefActiveItemId)){reliefActiveItemId=null;reliefSourceImage=null;const next=reliefItems.find(x=>!x.cut)||reliefItems[0];if(next)loadReliefItem(next);}
+            renderReliefItemList();
+            const stack=useAssemblyUndo?assemblyUndoStack:undoStack;
+            imageReliefUndoState=stack.length>undoDepthBefore?stack[stack.length-1]:null;
+            document.getElementById('btn-remove-image-relief').disabled=true;
+            document.getElementById('relief-status').textContent='Готово: вырезано '+chosen.length+' рисунков. Неотмеченные удалены из списка. Общая операция доступна для отмены.';
+        },SUBTRACTION);
+        if(!ok)throw new Error('CSG не подтвердил успешное завершение пакета. Исходная геометрия должна остаться без изменений.');
+        fill.style.width='100%';label.textContent='Пакетная резка завершена';time.textContent='Общее время: '+((performance.now()-started)/1000).toFixed(1)+' с';
+    }catch(error){
+        cutters.forEach(disposeCSGBrush);
+        label.textContent='Пакет остановлен';fill.style.width='0%';time.textContent='Время: '+((performance.now()-started)/1000).toFixed(1)+' с';
+        document.getElementById('relief-status').textContent='Ошибка пакетной резки: '+error.message+' Рисунки оставлены в списке.';
+        log('[CSG BATCH ERROR] '+(error.stack||error.message));
+    }finally{
+        reliefBatchRunning=false;renderReliefItemList();updateReliefBatchButtons();
+    }
+});
+
 
 /* END IMAGE RELIEF MODULE */
 
