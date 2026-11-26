@@ -6,6 +6,7 @@ import time
 
 import bpy
 import bmesh
+from mathutils.bvhtree import BVHTree
 
 
 def parse_args():
@@ -83,6 +84,110 @@ def mesh_stats(obj):
     return stats
 
 
+
+def topology_diagnostics(obj, max_samples=12):
+    """Inspect edge incidence, connected face islands and non-adjacent self-overlaps."""
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    bm.edges.ensure_lookup_table()
+    bm.faces.ensure_lookup_table()
+
+    incidence = {}
+    suspicious_edges = []
+    for edge in bm.edges:
+        linked = len(edge.link_faces)
+        incidence[str(linked)] = incidence.get(str(linked), 0) + 1
+        if linked != 2 and len(suspicious_edges) < max_samples:
+            suspicious_edges.append({
+                "linked_faces": linked,
+                "vertices": [[round(float(v.co[i]), 6) for i in range(3)] for v in edge.verts],
+            })
+
+    # Count connected face islands by traversing face adjacency across shared edges.
+    unseen = set(bm.faces)
+    islands = []
+    while unseen:
+        seed = unseen.pop()
+        stack = [seed]
+        count = 0
+        while stack:
+            face = stack.pop()
+            count += 1
+            for edge in face.edges:
+                for neighbor in edge.link_faces:
+                    if neighbor in unseen:
+                        unseen.remove(neighbor)
+                        stack.append(neighbor)
+        islands.append(count)
+    islands.sort(reverse=True)
+
+    # BVH overlap includes neighboring triangles; discard pairs sharing any vertex.
+    overlap_count = 0
+    overlap_samples = []
+    try:
+        tree = BVHTree.FromBMesh(bm, epsilon=1e-7)
+        pairs = tree.overlap(tree)
+        for a, b in pairs:
+            if a >= b:
+                continue
+            fa, fb = bm.faces[a], bm.faces[b]
+            if set(fa.verts).intersection(fb.verts):
+                continue
+            overlap_count += 1
+            if len(overlap_samples) < max_samples:
+                overlap_samples.append([int(a), int(b)])
+    except Exception as exc:
+        overlap_error = str(exc)
+    else:
+        overlap_error = None
+
+    result = {
+        "edge_face_incidence_histogram": incidence,
+        "edges_not_linked_to_exactly_two_faces": sum(1 for e in bm.edges if len(e.link_faces) != 2),
+        "suspicious_edge_samples": suspicious_edges,
+        "connected_face_island_count": len(islands),
+        "largest_face_islands": islands[:12],
+        "non_adjacent_bvh_overlap_pairs": overlap_count,
+        "overlap_pair_samples": overlap_samples,
+        "overlap_test_error": overlap_error,
+    }
+    bm.free()
+    return result
+
+
+def simple_cube_boolean_test():
+    """Control test: subtract one closed cube from another using Blender Exact."""
+    bpy.ops.object.select_all(action="DESELECT")
+    bpy.ops.mesh.primitive_cube_add(size=2.0, location=(0.0, 0.0, 0.0))
+    target = bpy.context.object
+    target.name = "Control_Target_Cube"
+    bpy.ops.mesh.primitive_cube_add(size=1.0, location=(0.5, 0.0, 0.0))
+    cutter = bpy.context.object
+    cutter.name = "Control_Cutter_Cube"
+
+    modifier = target.modifiers.new(name="Control_Exact_Difference", type="BOOLEAN")
+    modifier.operation = "DIFFERENCE"
+    modifier.solver = "EXACT"
+    modifier.object = cutter
+    bpy.ops.object.select_all(action="DESELECT")
+    target.select_set(True)
+    bpy.context.view_layer.objects.active = target
+    bpy.context.view_layer.update()
+
+    started = time.perf_counter()
+    bpy.ops.object.modifier_apply(modifier=modifier.name)
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    stats = mesh_stats(target)
+    result = {
+        "boolean_ms": round(elapsed_ms, 3),
+        "result": stats,
+        "closed_manifold": stats["faces"] > 0 and stats["non_manifold_edges"] == 0 and stats["boundary_edges"] == 0,
+    }
+    bpy.data.objects.remove(cutter, do_unlink=True)
+    bpy.data.objects.remove(target, do_unlink=True)
+    return result
+
 def recalculate_normals(obj):
     bm = bmesh.new()
     bm.from_mesh(obj.data)
@@ -126,6 +231,9 @@ def main():
         "cutter_input": os.path.abspath(args.cutter),
         "target_before_recalc": mesh_stats(target),
         "cutter_before_recalc": mesh_stats(cutter),
+        "target_topology_before_recalc": topology_diagnostics(target),
+        "cutter_topology_before_recalc": topology_diagnostics(cutter),
+        "simple_cube_control": simple_cube_boolean_test(),
     }
 
     print("[BLENDER BOOLEAN] Input stats before normal recalculation:")
