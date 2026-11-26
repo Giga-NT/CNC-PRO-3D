@@ -6979,7 +6979,7 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
         [0, 0], [0, 1], [0, 2], [1, 2],
         [2, 2], [2, 1], [2, 0], [1, 0]
     ];
-    const heightErrorTolerance = Math.max(0.000005, depthMeters * 0.0005);
+    const heightErrorTolerance = 0.00002; // 0.02 mm maximum sampled heightfield deviation
     let fullMaskBlocks = 0;
     let simplifiedBottomBlocks = 0;
     const addBottomTriangle = (a, b, c) => {
@@ -7013,7 +7013,7 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
         const p00 = ring[0].depth;
         const p20 = ring[6].depth;
         const p02 = ring[2].depth;
-        const planeTolerance = heightErrorTolerance * 0.5;
+        const planeTolerance = heightErrorTolerance;
         let maxPlaneDeviation = 0;
         for (let dy = 0; dy <= 2; dy++) {
             for (let dx = 0; dx <= 2; dx++) {
