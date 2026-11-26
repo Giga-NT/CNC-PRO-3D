@@ -166,7 +166,7 @@ def topology_diagnostics(obj, max_samples=12):
 
 
 
-def boolean_probe(target_source, cutter_source, operation, flip_cutter=False):
+def boolean_probe(target_source, cutter_source, operation, flip_cutter=False, export_path=None):
     target = target_source.copy()
     target.data = target_source.data.copy()
     bpy.context.collection.objects.link(target)
@@ -198,6 +198,8 @@ def boolean_probe(target_source, cutter_source, operation, flip_cutter=False):
     stats = mesh_stats(target)
     result_topology = topology_diagnostics(target, max_samples=8) if stats["faces"] else None
     source_bounds = mesh_stats(target_source)["world_bounds"]
+    if export_path and stats["faces"]:
+        export_stl(target, export_path)
     output = {
         "operation": operation,
         "cutter_normals_flipped": flip_cutter,
@@ -281,7 +283,7 @@ def make_cutter_repair_variant(source, mode):
     return obj, {"mode": mode, "before": before, "after": after, "repair_details": details}
 
 
-def cutter_repair_boolean_probes(target, cutter):
+def cutter_repair_boolean_probes(target, cutter, output_path=None):
     results = []
     modes = (
         "weld_0.000001",
@@ -296,7 +298,8 @@ def cutter_repair_boolean_probes(target, cutter):
             variant, repair = make_cutter_repair_variant(cutter, mode)
             if mode == "delete_all_faces_touching_bad_edges_fill":
                 for flip in (False, True):
-                    probe = boolean_probe(target, variant, "DIFFERENCE", flip_cutter=flip)
+                    probe_path = output_path if not flip else None
+                    probe = boolean_probe(target, variant, "DIFFERENCE", flip_cutter=flip, export_path=probe_path)
                     results.append({"repair": repair, "boolean": probe})
             else:
                 probe = boolean_probe(target, variant, "DIFFERENCE", flip_cutter=False)
@@ -388,7 +391,9 @@ def main():
         "cutter_topology_before_recalc": topology_diagnostics(cutter),
         "simple_cube_control": simple_cube_boolean_test(),
         "operand_boolean_probes": operand_boolean_probes(target, cutter),
-        "cutter_repair_boolean_probes": cutter_repair_boolean_probes(target, cutter),
+        "cutter_repair_boolean_probes": cutter_repair_boolean_probes(
+            target, cutter, os.path.splitext(args.out)[0] + "_repaired.stl"
+        ),
     }
 
     print("[BLENDER BOOLEAN] Input stats before normal recalculation:")
