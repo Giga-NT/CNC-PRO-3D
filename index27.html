@@ -238,6 +238,7 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
         "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
         "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
         "three-bvh-csg": "https://cdn.jsdelivr.net/npm/three-bvh-csg@0.0.16/build/index.module.js",
+        "manifold-3d": "https://cdn.jsdelivr.net/npm/manifold-3d@3.5.5/manifold.js",
         "three-mesh-bvh": "https://cdn.jsdelivr.net/npm/three-mesh-bvh@0.7.0/build/index.module.js"
     }
 }
@@ -484,6 +485,13 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
         <label>Ширина рисунка: <span class="val" id="relief-size-value">75</span>%
             <input type="range" id="relief-size" min="20" max="100" step="1" value="75">
         </label>
+        <label style="display:block;margin:7px 0;">Булевый движок:
+            <select id="relief-csg-engine" style="width:100%;margin-top:4px;">
+                <option value="manifold" selected>Manifold WASM — тест скорости</option>
+                <option value="three-bvh-csg">three-bvh-csg — прежний движок</option>
+            </select>
+        </label>
+        <div class="draw-instructions">Manifold — экспериментальный режим. При ошибке выбери прежний движок. Параметры и детализация рельефа не меняются.</div>
         <div class="draw-instructions">Точное положение на поверхности (координаты в метрах от центра стелы):</div>
         <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px;">
             <label>X, м <input type="number" id="relief-pos-x" step="0.005" value="0"></label>
@@ -7123,6 +7131,222 @@ function removeImageRelief() {
     document.getElementById('relief-status').textContent = 'Рельеф удалён. Исходная геометрия стелы восстановлена.';
 }
 
+
+let manifoldWasmPromise = null;
+
+async function getManifoldWasm() {
+    if (!manifoldWasmPromise) {
+        manifoldWasmPromise = (async () => {
+            const manifoldModule = await import('manifold-3d');
+            const createModule = manifoldModule.default || manifoldModule;
+            const wasm = await createModule();
+            wasm.setup();
+            if (!wasm.Manifold || !wasm.Mesh) throw new Error('Manifold WASM: API Mesh/Manifold не найден');
+            return wasm;
+        })().catch(error => {
+            manifoldWasmPromise = null;
+            throw error;
+        });
+    }
+    return manifoldWasmPromise;
+}
+
+function createManifoldInputMesh(wasm, sourceGeometry, worldMatrix, runIdForMaterial, fallbackRunId) {
+    const geometry = normalizeForCSG(sourceGeometry, 0, true);
+    let mesh = null;
+    try {
+        geometry.applyMatrix4(worldMatrix);
+        const position = geometry.getAttribute('position');
+        const index = geometry.getIndex();
+        if (!position || !index || index.count < 12 || index.count % 3 !== 0) {
+            throw new Error('Manifold: входная геометрия не является корректной треугольной сеткой');
+        }
+
+        const vertProperties = new Float32Array(position.count * 3);
+        for (let i = 0; i < position.count; i++) {
+            vertProperties[i * 3] = position.getX(i);
+            vertProperties[i * 3 + 1] = position.getY(i);
+            vertProperties[i * 3 + 2] = position.getZ(i);
+        }
+
+        const groups = (geometry.groups || [])
+            .filter(g => Number.isInteger(g.start) && Number.isInteger(g.count) &&
+                g.start >= 0 && g.count >= 3 && g.count % 3 === 0 &&
+                g.start + g.count <= index.count)
+            .slice()
+            .sort((a, b) => a.start - b.start);
+        if (!groups.length) throw new Error('Manifold: у входной сетки отсутствуют корректные группы треугольников');
+
+        const runIndex = [];
+        const runOriginalID = [];
+        let cursor = 0;
+        for (const group of groups) {
+            if (group.start > cursor) {
+                runIndex.push(cursor);
+                runOriginalID.push(fallbackRunId);
+            }
+            const start = Math.max(cursor, group.start);
+            const end = group.start + group.count;
+            if (end > start) {
+                runIndex.push(start);
+                runOriginalID.push(runIdForMaterial(group.materialIndex));
+                cursor = end;
+            }
+        }
+        if (cursor < index.count) {
+            runIndex.push(cursor);
+            runOriginalID.push(fallbackRunId);
+        }
+        if (!runIndex.length) throw new Error('Manifold: не удалось сформировать material runs');
+        runIndex.push(index.count);
+
+        mesh = new wasm.Mesh({
+            numProp: 3,
+            vertProperties,
+            triVerts: new Uint32Array(index.array),
+            runIndex: new Uint32Array(runIndex),
+            runOriginalID: new Uint32Array(runOriginalID)
+        });
+        // CSG geometry often duplicates vertices at material/normal boundaries.
+        // Manifold uses merge vectors to reconnect coincident geometric positions.
+        mesh.merge();
+        return mesh;
+    } catch (error) {
+        if (mesh && typeof mesh.delete === 'function') mesh.delete();
+        throw error;
+    } finally {
+        geometry.dispose();
+    }
+}
+
+async function runImageReliefWithManifold(cutter, onSuccess) {
+    let targetSolid = null;
+    let cutterSolid = null;
+    let resultSolid = null;
+    let targetInput = null;
+    let cutterInput = null;
+    let outputMesh = null;
+    let undoPushed = false;
+    const startedAt = performance.now();
+
+    try {
+        setStatus('⏳ Загрузка Manifold WASM…');
+        showLoading(true, 'Загрузка Manifold WASM…');
+        await new Promise(resolve => requestAnimationFrame(() => resolve()));
+        const wasm = await getManifoldWasm();
+
+        pushUndo();
+        undoPushed = true;
+        document.getElementById('btn-undo').disabled = false;
+
+        stellaMesh.updateWorldMatrix(true, false);
+        cutter.updateWorldMatrix(true, false);
+        const firstId = wasm.Manifold.reserveIDs(4);
+        const targetInput = createManifoldInputMesh(
+            wasm, stellaMesh.geometry, stellaMesh.matrixWorld,
+            materialIndex => firstId + Math.max(0, Math.min(2, materialIndex | 0)),
+            firstId
+        );
+        const cutterId = firstId + 3;
+        const cutterInput = createManifoldInputMesh(
+            wasm, cutter.geometry, cutter.matrixWorld,
+            () => cutterId, cutterId
+        );
+
+        setStatus('⏳ Проверка и подготовка замкнутых тел…');
+        showLoading(true, 'Проверка и подготовка замкнутых тел…');
+        const importStartedAt = performance.now();
+        targetSolid = new wasm.Manifold(targetInput);
+        cutterSolid = new wasm.Manifold(cutterInput);
+        if (targetSolid.isEmpty() || targetSolid.numTri() < 4) {
+            throw new Error('Manifold не принял геометрию стелы как замкнутое тело. Старый движок не затронут.');
+        }
+        if (cutterSolid.isEmpty() || cutterSolid.numTri() < 4) {
+            throw new Error('Manifold не принял режущий объём как замкнутое тело. Старый движок не затронут.');
+        }
+        log('[MANIFOLD PERF] input conversion: ' + (performance.now() - importStartedAt).toFixed(1) +
+            ' ms; target=' + targetSolid.numTri().toLocaleString('ru-RU') +
+            ' triangles; cutter=' + cutterSolid.numTri().toLocaleString('ru-RU') + ' triangles');
+
+        setStatus('⏳ Manifold: вычитание рельефа…');
+        showLoading(true, 'Manifold: вычитание рельефа…');
+        const booleanStartedAt = performance.now();
+        resultSolid = targetSolid.subtract(cutterSolid);
+        const booleanMs = performance.now() - booleanStartedAt;
+        if (!resultSolid || resultSolid.isEmpty() || resultSolid.numTri() < 4 || !(resultSolid.volume() > 0)) {
+            throw new Error('Manifold вернул пустое или некорректное тело после вычитания');
+        }
+
+        outputMesh = resultSolid.getMesh();
+        const numProp = outputMesh.numProp;
+        if (!outputMesh.vertProperties || numProp < 3 || !outputMesh.triVerts || outputMesh.triVerts.length < 12) {
+            throw new Error('Manifold: некорректный формат выходной сетки');
+        }
+        const vertexCount = outputMesh.vertProperties.length / numProp;
+        const positions = new Float32Array(vertexCount * 3);
+        for (let i = 0; i < vertexCount; i++) {
+            positions[i * 3] = outputMesh.vertProperties[i * numProp];
+            positions[i * 3 + 1] = outputMesh.vertProperties[i * numProp + 1];
+            positions[i * 3 + 2] = outputMesh.vertProperties[i * numProp + 2];
+        }
+        const indices = new Uint32Array(outputMesh.triVerts);
+        const finalGeometry = new THREE.BufferGeometry();
+        finalGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        finalGeometry.setIndex(new THREE.BufferAttribute(indices, 1));
+        finalGeometry.clearGroups();
+
+        const runIndex = outputMesh.runIndex;
+        const runOriginalID = outputMesh.runOriginalID;
+        if (runIndex && runOriginalID && runOriginalID.length) {
+            for (let run = 0; run < runOriginalID.length; run++) {
+                const start = runIndex[run];
+                const end = runIndex[run + 1] ?? indices.length;
+                const originalId = runOriginalID[run];
+                const materialIndex = originalId === cutterId
+                    ? 2
+                    : Math.max(0, Math.min(2, originalId - firstId));
+                if (end > start) finalGeometry.addGroup(start, end - start, materialIndex);
+            }
+        }
+        if (!finalGeometry.groups.length) finalGeometry.addGroup(0, indices.length, 0);
+        finalGeometry.computeVertexNormals();
+        finalGeometry.computeBoundingBox();
+        finalGeometry.computeBoundingSphere();
+        const resultVertices = finalGeometry.getAttribute('position').count;
+        const resultTriangles = Math.floor(indices.length / 3);
+        if (resultVertices < 12 || !finalGeometry.boundingSphere || !(finalGeometry.boundingSphere.radius > 0.001)) {
+            finalGeometry.dispose();
+            throw new Error('Manifold: результат не прошёл базовую проверку геометрии');
+        }
+
+        replaceStellaFromBrush({ geometry: finalGeometry });
+        if (!isMeshValid(stellaMesh)) throw new Error('Результат Manifold не прошёл проверку модели');
+        clearCutPreview();
+        if (onSuccess) onSuccess(1);
+        log('[MANIFOLD PERF] boolean difference: ' + booleanMs.toFixed(1) +
+            ' ms; resultVertices=' + resultVertices.toLocaleString('ru-RU') +
+            '; resultTriangles=' + resultTriangles.toLocaleString('ru-RU'));
+        log('[MANIFOLD PERF] total: ' + (performance.now() - startedAt).toFixed(1) + ' ms');
+        showLoading(false);
+        return true;
+    } catch (error) {
+        if (undoPushed) popUndoState();
+        log('[MANIFOLD ERROR] ' + error.message);
+        console.error('[MANIFOLD ERROR]', error);
+        setStatus('❌ Manifold: ' + error.message + '. Можно переключить движок на three-bvh-csg.');
+        throw error;
+    } finally {
+        if (outputMesh && typeof outputMesh.delete === 'function') outputMesh.delete();
+        if (resultSolid) resultSolid.delete();
+        if (cutterSolid) cutterSolid.delete();
+        if (targetSolid) targetSolid.delete();
+        if (targetInput && typeof targetInput.delete === 'function') targetInput.delete();
+        if (cutterInput && typeof cutterInput.delete === 'function') cutterInput.delete();
+        disposeCSGBrush(cutter);
+        showLoading(false);
+    }
+}
+
 document.getElementById('btn-build-image-relief').addEventListener('click', async () => {
     if (!stellaMesh) return document.getElementById('relief-status').textContent = 'Сначала создай стелу.';
     if (!reliefSourceImage) return document.getElementById('relief-status').textContent = 'Сначала выбери изображение.';
@@ -7161,7 +7385,8 @@ document.getElementById('btn-build-image-relief').addEventListener('click', asyn
                 '; fullMaskBlocks=' + geometryOptimization.fullMaskBlocks.toLocaleString('ru-RU') +
                 '; heightTolerance=' + (geometryOptimization.heightErrorTolerance * 1000).toFixed(3) + ' mm');
         }
-        prepareImageReliefBVH(geometry);
+        const reliefEngine = document.getElementById('relief-csg-engine')?.value || 'three-bvh-csg';
+        if (reliefEngine !== 'manifold') prepareImageReliefBVH(geometry);
         const cutter = new Brush(geometry);
         cutter.material = getCSGMaterials();
         cutter.position.copy(stellaMesh.position);
@@ -7175,7 +7400,7 @@ document.getElementById('btn-build-image-relief').addEventListener('click', asyn
             ' вершин). Выполняется вычитание из тела стелы…';
         const useAssemblyUndo = !!(selectedAssemblyTarget && !(assemblyItems.find(item => item.root === selectedAssemblyTarget) || {}).isPrimary);
         const undoDepthBeforeRelief = useAssemblyUndo ? assemblyUndoStack.length : undoStack.length;
-        const ok = await runCSG([cutter], 'Рельеф по изображению', () => {
+        const onReliefSuccess = () => {
             disposeImageReliefPreview();
             const activeUndoStack = useAssemblyUndo ? assemblyUndoStack : undoStack;
             imageReliefUndoState = activeUndoStack.length > undoDepthBeforeRelief ? activeUndoStack[activeUndoStack.length - 1] : null;
@@ -7183,7 +7408,10 @@ document.getElementById('btn-build-image-relief').addEventListener('click', asyn
             document.getElementById('relief-status').textContent =
                 'Изображение вырезано непосредственно в геометрии стелы. Его можно удалить кнопкой «Удалить рельеф», пока не выполнены другие операции.';
             setStatus('Рельеф выфрезерован в поверхности стелы.');
-        }, SUBTRACTION);
+        };
+        const ok = reliefEngine === 'manifold'
+            ? await runImageReliefWithManifold(cutter, onReliefSuccess)
+            : await runCSG([cutter], 'Рельеф по изображению', onReliefSuccess, SUBTRACTION);
         if (!ok) {
             document.getElementById('relief-status').textContent =
                 'Не удалось выполнить вычитание. Проверь пересечение с лицевой поверхностью и доступность памяти.';
