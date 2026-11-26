@@ -6,28 +6,26 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(FetchContent)
+set(BUILD_DOC OFF CACHE BOOL "Do not build CGAL documentation" FORCE)
+set(CGAL_DISABLE_GMP ON CACHE BOOL "Use CGAL without GMP/MPFR" FORCE)
+set(CGAL_ENABLE_TESTING OFF CACHE BOOL "Do not build CGAL tests" FORCE)
+set(CGAL_HAS_NO_THREADS ON CACHE BOOL "Build single-threaded CGAL for WebAssembly workers" FORCE)
+set(CGAL_DO_NOT_USE_BOOST_MP OFF CACHE BOOL "Keep CGAL Boost multiprecision support enabled" FORCE)
+
 FetchContent_Declare(
   cgal_src
   GIT_REPOSITORY https://github.com/CGAL/cgal.git
   GIT_TAG v6.2.1
   GIT_SHALLOW TRUE
 )
-FetchContent_GetProperties(cgal_src)
-if(NOT cgal_src_POPULATED)
-  FetchContent_Populate(cgal_src)
-endif()
+FetchContent_MakeAvailable(cgal_src)
 
-find_package(Boost 1.74 REQUIRED)
+# CGAL's branch-build configuration generates CGALConfig.cmake and config.h
+# in the FetchContent binary directory, and exports every package include dir.
+find_package(CGAL CONFIG REQUIRED PATHS "${cgal_src_BINARY_DIR}" NO_DEFAULT_PATH)
 
 add_executable(cgal_boolean src/cgal_boolean.cpp)
-target_include_directories(cgal_boolean SYSTEM PRIVATE
-  "${cgal_src_SOURCE_DIR}/include"
-  ${Boost_INCLUDE_DIRS}
-)
-target_compile_definitions(cgal_boolean PRIVATE
-  CGAL_DISABLE_GMP
-  CGAL_USE_BOOST_MP
-)
+target_link_libraries(cgal_boolean PRIVATE CGAL::CGAL)
 target_compile_options(cgal_boolean PRIVATE -O3 -fexceptions)
 target_link_options(cgal_boolean PRIVATE
   -O3
