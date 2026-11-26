@@ -7163,6 +7163,7 @@ function clearImageReliefSurfaceTest() {
 function buildImageReliefSurfaceTest() {
     if (!stellaMesh || !reliefSourceImage) throw new Error('Сначала создай стелу и выбери изображение.');
     clearImageReliefSurfaceTest();
+    disposeImageReliefPreview();
     // Geometry and placement are expressed in the stela's local coordinates.
     stellaMesh.geometry.computeBoundingBox();
     const box = stellaMesh.geometry.boundingBox;
@@ -7182,8 +7183,9 @@ function buildImageReliefSurfaceTest() {
     const faceZ = side === 'back' ? box.min.z : box.max.z;
     const direction = side === 'back' ? 1 : -1;
     const depth = Number(reliefDepthInput.value) / 1000;
-    const nx = Math.max(96, Math.min(256, Math.round(Number(reliefResolutionInput.value) * Math.min(1, aspect))));
-    const ny = Math.max(96, Math.min(256, Math.round(Number(reliefResolutionInput.value) / Math.max(0.01, aspect))));
+    const requestedResolution = Math.max(128, Math.min(640, Number(reliefResolutionInput.value) || 384));
+    const nx = Math.max(96, Math.min(640, Math.round(requestedResolution * Math.min(1, aspect))));
+    const ny = Math.max(96, Math.min(640, Math.round(requestedResolution / Math.max(0.01, aspect))));
     const canvas = document.createElement('canvas');
     canvas.width = nx + 1; canvas.height = ny + 1;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -7261,6 +7263,7 @@ function buildImageReliefSurfaceTest() {
 
 function removeImageRelief() {
     const removeButton = document.getElementById('btn-remove-image-relief');
+    disposeImageReliefPreview();
     if (clearImageReliefSurfaceTest()) {
         imageReliefUndoState = null;
         removeButton.disabled = true;
