@@ -5,7 +5,7 @@ This is an isolated benchmark. It does not replace or modify the production CSG 
 ## 1. Capture the exact operands in CNC PRO 3D
 
 1. Pull the latest `cam-native-rebuild` branch.
-2. Open `index27.html through the local HTTP server.
+2. Open `index27.html` through the local HTTP server.
 3. Open browser DevTools Console.
 4. Run:
    ```js
