@@ -7366,6 +7366,10 @@ document.getElementById('btn-cut-selected-reliefs').addEventListener('click', as
             prepareImageReliefBVH(geometry);
             const cutter=new Brush(geometry);cutter.material=getCSGMaterials();cutter.position.copy(stellaMesh.position);cutter.quaternion.copy(stellaMesh.quaternion);cutter.scale.copy(stellaMesh.scale);cutter.updateMatrixWorld(true);cutters.push(cutter);
             log('[CSG BATCH] cutter '+(i+1)+'/'+chosen.length+' '+item.name+': '+geometry.getAttribute('position').count.toLocaleString('ru-RU')+' vertices');
+            fill.style.width=((i+1)/chosen.length*10).toFixed(0)+'%';
+            label.textContent='Подготовлено резцов '+(i+1)+' из '+chosen.length;
+            time.textContent='Подготовка режущей геометрии…';
+            await new Promise(resolve=>requestAnimationFrame(resolve));
         }
         const ok=await runCSG(cutters,'Пакетный рельеф ('+chosen.length+' рисунков)',()=>{
             disposeImageReliefPreview();clearImageReliefSurfaceTest();
@@ -7384,7 +7388,7 @@ document.getElementById('btn-cut-selected-reliefs').addEventListener('click', as
             document.getElementById('relief-status').textContent='Готово: вырезано '+chosen.length+' рисунков. Неотмеченные удалены из списка. Общая операция доступна для отмены.';
         },SUBTRACTION,(done,total,evaluateMs)=>{
             const elapsed=(performance.now()-started)/1000,ratio=done/total,remaining=done?elapsed/done*(total-done):0;
-            fill.style.width=(ratio*100).toFixed(0)+'%';label.textContent='Вырезано '+done+' из '+total+' · '+chosen[done-1].name;
+            fill.style.width=(10+ratio*90).toFixed(0)+'%';label.textContent='Вырезано '+done+' из '+total+' · '+chosen[done-1].name;
             time.textContent='Прошло: '+elapsed.toFixed(1)+' с · Осталось примерно: '+remaining.toFixed(1)+' с · CSG: '+(evaluateMs/1000).toFixed(1)+' с';
         },true);
         if(!ok)throw new Error('CSG не подтвердил успешное завершение пакета. Исходная геометрия должна остаться без изменений.');
