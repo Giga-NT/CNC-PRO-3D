@@ -7320,6 +7320,13 @@ async function runImageReliefWithManifold(cutter, onSuccess) {
         }
 
         replaceStellaFromBrush({ geometry: finalGeometry });
+        // Diagnostic: dense relief facets can produce self-shadow acne that looks
+        // like stretched triangle webs. Keep receiving scene shadows, but do not
+        // let the dense Manifold result cast shadows during this visual test.
+        stellaMesh.castShadow = false;
+        stellaMesh.receiveShadow = true;
+        stellaMesh.userData.manifoldShadowDiagnostic = true;
+        log('[MANIFOLD] shadow diagnostic: castShadow=false, receiveShadow=true');
         if (!isMeshValid(stellaMesh)) throw new Error('Результат Manifold не прошёл проверку модели');
         clearCutPreview();
         if (onSuccess) onSuccess(1);
