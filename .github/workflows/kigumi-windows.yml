@@ -1,0 +1,76 @@
+name: Kigumi Windows build (experiment)
+
+on:
+  push:
+    branches:
+      - cam-native-rebuild
+    paths:
+      - "experiments/kigumi/**"
+      - ".github/workflows/kigumi-windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - name: Checkout CNC PRO 3D
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Clone Kigumi and its vcpkg submodule
+        shell: pwsh
+        run: |
+          $src = Join-Path $env:RUNNER_TEMP "kigumi-src"
+          git clone --recurse-submodules --depth 1 https://github.com/unageek/kigumi.git $src
+          if ($LASTEXITCODE -ne 0) { throw "Kigumi clone failed" }
+          "KIGUMI_SRC=$src" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          & "$env:KIGUMI_SRC\vcpkg\bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { throw "vcpkg bootstrap failed" }
+
+      - name: Configure Kigumi
+        shell: pwsh
+        run: |
+          cmake -S "$env:KIGUMI_SRC" -B "$env:KIGUMI_SRC\build" -G "Visual Studio 17 2022" -A x64 "-DCMAKE_TOOLCHAIN_FILE=$env:KIGUMI_SRC\vcpkg\scripts\buildsystems\vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows -DKIGUMI_BUILD_TESTS=OFF -DKIGUMI_BUILD_BENCHES=OFF
+          if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
+
+      - name: Build Kigumi CLI
+        shell: pwsh
+        run: |
+          cmake --build "$env:KIGUMI_SRC\build" --config Release --target kigumi_cli --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw "Kigumi build failed" }
+
+      - name: Package executable and license
+        shell: pwsh
+        run: |
+          $dist = Join-Path $env:GITHUB_WORKSPACE "dist-kigumi"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          $exe = Get-ChildItem "$env:KIGUMI_SRC\build" -Recurse -Filter kigumi.exe | Select-Object -First 1
+          if (-not $exe) { throw "kigumi.exe was not produced" }
+          Copy-Item $exe.FullName (Join-Path $dist "kigumi.exe")
+          Copy-Item "$env:KIGUMI_SRC\LICENSE" (Join-Path $dist "KIGUMI-LICENSE-MIT.txt")
+          @"
+          Kigumi CLI Windows x64 build for CNC PRO 3D testing.
+          Source: https://github.com/unageek/kigumi
+          The executable also links CGAL and its dependencies. Review their licenses before redistribution.
+          "@ | Set-Content (Join-Path $dist "BUILD-INFO.txt")
+          Compress-Archive -Path "$dist\*" -DestinationPath (Join-Path $env:GITHUB_WORKSPACE "kigumi-windows-x64.zip") -Force
+
+      - name: Upload Kigumi CLI
+        uses: actions/upload-artifact@v4
+        with:
+          name: kigumi-windows-x64
+          path: kigumi-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14
