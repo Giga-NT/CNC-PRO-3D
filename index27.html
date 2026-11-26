@@ -5113,6 +5113,22 @@ async function runCSG(cutters, label, onSuccess, operation = null, onProgress = 
                 // the evaluator's BVH path requires an index on every iteration.
                 nextBrush.geometry = normalizeForCSG(rawResultGeometry, 0, true);
                 if (nextBrush.geometry !== rawResultGeometry) rawResultGeometry.dispose();
+
+                // Keep material slots stable across image-relief batch passes.
+                // three-bvh-csg may append cutter materials to the result; on
+                // the next pass that can shift indices belonging to earlier
+                // relief faces. All newly cut faces use the final rough-cut slot.
+                if (strictCutters) {
+                    const stableMaterials = getCSGMaterials();
+                    for (const group of (nextBrush.geometry.groups || [])) {
+                        const materialIndex = Math.max(0, group.materialIndex | 0);
+                        group.materialIndex = materialIndex >= stableMaterials.length
+                            ? stableMaterials.length - 1
+                            : materialIndex;
+                    }
+                    nextBrush.material = stableMaterials;
+                }
+
                 nextBrush.geometry.computeBoundingBox();
                 nextBrush.geometry.computeBoundingSphere();
                 log('[CSG BATCH] next target normalized: indexCount=' +
