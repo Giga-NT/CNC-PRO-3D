@@ -7231,7 +7231,7 @@ function buildImageReliefSurfaceTest() {
         const localY=centerY + (0.5-y/ny)*height;
         const dx=localX-centerX, dy=localY-centerY;
         positions.push(centerX+dx*cos-dy*sin, centerY+dx*sin+dy*cos,
-            faceZ + direction*(0.00004-vertexDepth[y*(nx+1)+x]));
+            faceZ + direction*(0.00005+vertexDepth[y*(nx+1)+x]));
         uvs.push(u,v);
         if (x<nx && y<ny) {
             const a=y*(nx+1)+x, b=a+1, d=a+(nx+1), c=d+1;
