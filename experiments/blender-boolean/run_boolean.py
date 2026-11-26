@@ -11,7 +11,7 @@ import bmesh
 def parse_args():
     argv = sys.argv
     argv = argv[argv.index("--") + 1:] if "--" in argv else []
-    parser = argparse.ArgumentParser(description="Blender Exact Boolean benchmark for CNC PRO 3D")
+    parser = argparse.ArgumentParser(description="Blender Exact Boolean diagnostic for CNC PRO 3D")
     parser.add_argument("--target", required=True, help="Target STL exported from CNC PRO 3D")
     parser.add_argument("--cutter", required=True, help="Cutter STL exported from CNC PRO 3D")
     parser.add_argument("--out", default="cnc_blender_exact_result.stl", help="Output STL")
@@ -45,10 +45,30 @@ def import_stl(path, name):
 def mesh_stats(obj):
     bm = bmesh.new()
     bm.from_mesh(obj.data)
+    bm.normal_update()
     non_manifold = sum(1 for edge in bm.edges if not edge.is_manifold)
     boundary = sum(1 for edge in bm.edges if edge.is_boundary)
     wire = sum(1 for edge in bm.edges if edge.is_wire)
+
+    world_points = [obj.matrix_world @ vert.co for vert in bm.verts]
+    if world_points:
+        mins = [min(float(p[i]) for p in world_points) for i in range(3)]
+        maxs = [max(float(p[i]) for p in world_points) for i in range(3)]
+        bounds = {
+            "min": [round(v, 6) for v in mins],
+            "max": [round(v, 6) for v in maxs],
+            "size": [round(maxs[i] - mins[i], 6) for i in range(3)],
+        }
+    else:
+        bounds = None
+
+    try:
+        signed_volume = float(bm.calc_volume(signed=True))
+    except Exception:
+        signed_volume = None
+
     stats = {
+        "object_name": obj.name,
         "vertices": len(bm.verts),
         "edges": len(bm.edges),
         "faces": len(bm.faces),
@@ -56,10 +76,22 @@ def mesh_stats(obj):
         "non_manifold_edges": non_manifold,
         "boundary_edges": boundary,
         "wire_edges": wire,
-        "dimensions": [round(float(v), 6) for v in obj.dimensions],
+        "signed_volume": round(signed_volume, 9) if signed_volume is not None else None,
+        "world_bounds": bounds,
     }
     bm.free()
     return stats
+
+
+def recalculate_normals(obj):
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    result = bmesh.ops.recalc_face_normals(bm, faces=list(bm.faces))
+    affected = len(result.get("faces", []))
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.data.update()
+    return affected
 
 
 def export_stl(obj, path):
@@ -90,11 +122,28 @@ def main():
         "blender_version": bpy.app.version_string,
         "target_input": os.path.abspath(args.target),
         "cutter_input": os.path.abspath(args.cutter),
-        "target_before": mesh_stats(target),
-        "cutter_before": mesh_stats(cutter),
+        "target_before_recalc": mesh_stats(target),
+        "cutter_before_recalc": mesh_stats(cutter),
     }
-    print("[BLENDER BOOLEAN] Input stats:")
-    print(json.dumps({k: report[k] for k in ("target_before", "cutter_before")}, ensure_ascii=False, indent=2))
+
+    print("[BLENDER BOOLEAN] Input stats before normal recalculation:")
+    print(json.dumps({
+        "target": report["target_before_recalc"],
+        "cutter": report["cutter_before_recalc"],
+    }, ensure_ascii=False, indent=2))
+
+    report["target_recalc_faces"] = recalculate_normals(target)
+    report["cutter_recalc_faces"] = recalculate_normals(cutter)
+    report["target_after_recalc"] = mesh_stats(target)
+    report["cutter_after_recalc"] = mesh_stats(cutter)
+
+    print("[BLENDER BOOLEAN] Input stats after normal recalculation:")
+    print(json.dumps({
+        "target_recalc_faces": report["target_recalc_faces"],
+        "cutter_recalc_faces": report["cutter_recalc_faces"],
+        "target": report["target_after_recalc"],
+        "cutter": report["cutter_after_recalc"],
+    }, ensure_ascii=False, indent=2))
 
     modifier = target.modifiers.new(name="CNC_Exact_Difference", type="BOOLEAN")
     modifier.operation = "DIFFERENCE"
@@ -104,12 +153,15 @@ def main():
     bpy.ops.object.select_all(action="DESELECT")
     target.select_set(True)
     bpy.context.view_layer.objects.active = target
+    bpy.context.view_layer.update()
 
     started = time.perf_counter()
     bpy.ops.object.modifier_apply(modifier=modifier.name)
+    bpy.context.view_layer.update()
     elapsed_ms = (time.perf_counter() - started) * 1000.0
 
     report["boolean_solver"] = "EXACT"
+    report["boolean_operation"] = "DIFFERENCE"
     report["boolean_ms"] = round(elapsed_ms, 3)
     report["result"] = mesh_stats(target)
     report["output_stl"] = os.path.abspath(args.out)
@@ -121,7 +173,7 @@ def main():
     with open(args.report, "w", encoding="utf-8") as handle:
         json.dump(report, handle, ensure_ascii=False, indent=2)
 
-    print("[BLENDER BOOLEAN] Exact Difference: %.3f ms" % elapsed_ms)
+    print("[BLENDER BOOLEAN] Exact Difference after normal recalculation: %.3f ms" % elapsed_ms)
     print("[BLENDER BOOLEAN] Result stats:")
     print(json.dumps(report["result"], ensure_ascii=False, indent=2))
     print("[BLENDER BOOLEAN] STL:", os.path.abspath(args.out))
