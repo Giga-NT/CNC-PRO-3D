@@ -196,12 +196,14 @@ def boolean_probe(target_source, cutter_source, operation, flip_cutter=False):
     bpy.ops.object.modifier_apply(modifier=modifier.name)
     elapsed = (time.perf_counter() - started) * 1000.0
     stats = mesh_stats(target)
+    result_topology = topology_diagnostics(target, max_samples=8) if stats["faces"] else None
     source_bounds = mesh_stats(target_source)["world_bounds"]
     output = {
         "operation": operation,
         "cutter_normals_flipped": flip_cutter,
         "boolean_ms": round(elapsed, 3),
         "result": stats,
+        "result_topology": result_topology,
         "result_has_target_bounds": bool(
             stats["world_bounds"] and source_bounds and
             stats["world_bounds"]["min"] == source_bounds["min"] and
@@ -244,7 +246,7 @@ def make_cutter_repair_variant(source, mode):
     if mode.startswith("weld_"):
         threshold = float(mode.split("_", 1)[1])
         result = bmesh.ops.remove_doubles(bm, verts=list(bm.verts), dist=threshold)
-        details["welded_vertices"] = len(result.get("targetmap", {}))
+        details["welded_vertices"] = len(result.get("targetmap", {})) if isinstance(result, dict) else None
     elif mode == "delete_excess_faces_fill":
         bad_edges = [e for e in bm.edges if len(e.link_faces) > 2]
         faces_to_delete = set()
@@ -292,8 +294,13 @@ def cutter_repair_boolean_probes(target, cutter):
         variant = None
         try:
             variant, repair = make_cutter_repair_variant(cutter, mode)
-            probe = boolean_probe(target, variant, "DIFFERENCE", flip_cutter=False)
-            results.append({"repair": repair, "boolean": probe})
+            if mode == "delete_all_faces_touching_bad_edges_fill":
+                for flip in (False, True):
+                    probe = boolean_probe(target, variant, "DIFFERENCE", flip_cutter=flip)
+                    results.append({"repair": repair, "boolean": probe})
+            else:
+                probe = boolean_probe(target, variant, "DIFFERENCE", flip_cutter=False)
+                results.append({"repair": repair, "boolean": probe})
         except Exception as exc:
             results.append({"mode": mode, "error": str(exc)})
         finally:
