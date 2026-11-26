@@ -20,12 +20,15 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(cgal_src)
 
-# CGAL's branch-build configuration generates CGALConfig.cmake and config.h
-# in the FetchContent binary directory, and exports every package include dir.
-find_package(CGAL CONFIG REQUIRED PATHS "${cgal_src_BINARY_DIR}" NO_DEFAULT_PATH)
+# CGAL branch builds do not provide an installed CGALConfig.cmake package.
+# Expose the generated headers and each package's headers directly instead.
+file(GLOB CGAL_PACKAGE_INCLUDE_DIRS "${cgal_src_SOURCE_DIR}/*/include")
+list(APPEND CGAL_PACKAGE_INCLUDE_DIRS "${cgal_src_BINARY_DIR}/include")
+list(APPEND CGAL_PACKAGE_INCLUDE_DIRS "${cgal_src_SOURCE_DIR}/Installation/include")
+list(REMOVE_DUPLICATES CGAL_PACKAGE_INCLUDE_DIRS)
 
 add_executable(cgal_boolean src/cgal_boolean.cpp)
-target_link_libraries(cgal_boolean PRIVATE CGAL::CGAL)
+target_include_directories(cgal_boolean SYSTEM PRIVATE ${CGAL_PACKAGE_INCLUDE_DIRS})
 target_compile_options(cgal_boolean PRIVATE -O3 -fexceptions)
 target_link_options(cgal_boolean PRIVATE
   -O3
