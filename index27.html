@@ -1454,6 +1454,39 @@ function popUndoState() {
     document.getElementById('btn-undo').disabled = undoStack.length === 0;
 }
 
+// Temporary diagnostic export for comparing external Boolean engines.
+// Enable in DevTools with: window.CNC_CAPTURE_BOOLEAN_INPUTS = true
+window.exportCNCBooleanTestMeshes = function () {
+    const snapshot = window.__CNC_BOOLEAN_TEST_SNAPSHOT;
+    if (!snapshot) throw new Error('Нет сохранённого снимка Boolean. Включи CNC_CAPTURE_BOOLEAN_INPUTS и заново запусти рельеф.');
+    if (typeof STLExporter !== 'function') throw new Error('STLExporter не загружен.');
+    const exporter = new STLExporter();
+    const exportOne = (geometry, matrix, filename) => {
+        const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial());
+        mesh.matrixAutoUpdate = false;
+        mesh.matrix.copy(matrix);
+        mesh.matrixWorld.copy(matrix);
+        mesh.updateMatrixWorld(true);
+        const data = exporter.parse(mesh, { binary: true });
+        const blob = new Blob([data], { type: 'model/stl' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+        geometry.dispose();
+        mesh.material.dispose();
+        return data.byteLength;
+    };
+    const targetBytes = exportOne(snapshot.targetGeometry, snapshot.targetMatrix, 'cnc_boolean_target.stl');
+    const cutterBytes = exportOne(snapshot.cutterGeometry, snapshot.cutterMatrix, 'cnc_boolean_cutter.stl');
+    console.info('[BLENDER TEST] Exported target and cutter STL:', { targetBytes, cutterBytes });
+    return { targetBytes, cutterBytes };
+};
+
 function createStellaBrush() {
     // normalizeForCSG сам создаёт рабочую геометрию (clone/toNonIndexed);
     // предварительный clone и повторный computeVertexNormals были лишними.
@@ -5009,6 +5042,17 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
             }
             document.getElementById('btn-undo').disabled = assemblyUndoStack.length === 0 && undoStack.length === 0;
             return false;
+        }
+        if (window.CNC_CAPTURE_BOOLEAN_INPUTS === true && cutters.length) {
+            const firstCutter = cutters[0];
+            firstCutter.updateMatrixWorld(true);
+            window.__CNC_BOOLEAN_TEST_SNAPSHOT = {
+                targetGeometry: brush.geometry.clone(),
+                targetMatrix: brush.matrixWorld.clone(),
+                cutterGeometry: firstCutter.geometry.clone(),
+                cutterMatrix: firstCutter.matrixWorld.clone()
+            };
+            console.info('[BLENDER TEST] Captured exact target/cutter operands before three-bvh-csg.');
         }
         let success = 0;
 
