@@ -23,7 +23,7 @@ FetchContent_MakeAvailable(cgal_src)
 # Emscripten does not search the host system include paths by default.
 # Copy Boost's header-only tree into the build directory so CGAL can include it
 # without exposing the host's full /usr/include to the cross-compiler.
-find_path(BOOST_INCLUDE_ROOT NAMES boost/config.hpp PATHS /usr/include /usr/local/include REQUIRED)
+find_path(BOOST_INCLUDE_ROOT NAMES boost/config.hpp PATHS /usr/include /usr/local/include NO_CMAKE_FIND_ROOT_PATH REQUIRED)
 file(COPY "${BOOST_INCLUDE_ROOT}/boost" DESTINATION "${CMAKE_BINARY_DIR}/boost-include")
 
 # CGAL branch builds do not provide an installed CGALConfig.cmake package.
