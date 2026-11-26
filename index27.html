@@ -5098,15 +5098,26 @@ async function runCSG(cutters, label, onSuccess, operation = null, onProgress = 
                 const evaluateStartedAt = performance.now();
                 const nextBrush = evaluator.evaluate(brush, c, op);
                 const evaluateMs = performance.now() - evaluateStartedAt;
-                const afterCount = nextBrush.geometry.getAttribute('position')?.count || 0;
-                const afterTriangles = nextBrush.geometry.index
-                    ? Math.floor(nextBrush.geometry.index.count / 3)
+                const rawResultGeometry = nextBrush.geometry;
+                const afterCount = rawResultGeometry.getAttribute('position')?.count || 0;
+                const afterTriangles = rawResultGeometry.index
+                    ? Math.floor(rawResultGeometry.index.count / 3)
                     : Math.floor(afterCount / 3);
                 log('[CSG PERF] evaluator.evaluate: ' + evaluateMs.toFixed(1) +
                     ' ms; resultVertices=' + afterCount.toLocaleString('ru-RU') +
                     '; resultTriangles=' + afterTriangles.toLocaleString('ru-RU'));
                 log('[CSG DIAG] operation=' + (op === SUBTRACTION ? 'SUBTRACTION' : op === ADDITION ? 'ADDITION' : 'INTERSECTION') +
                     ', vertices=' + beforeCount + ' -> ' + afterCount);
+                // three-bvh-csg may return a non-indexed result. Normalize each
+                // intermediate result before it becomes the next target Brush:
+                // the evaluator's BVH path requires an index on every iteration.
+                nextBrush.geometry = normalizeForCSG(rawResultGeometry, 0, true);
+                if (nextBrush.geometry !== rawResultGeometry) rawResultGeometry.dispose();
+                nextBrush.geometry.computeBoundingBox();
+                nextBrush.geometry.computeBoundingSphere();
+                log('[CSG BATCH] next target normalized: indexCount=' +
+                    (nextBrush.geometry.index ? nextBrush.geometry.index.count : 0) +
+                    '; groups=' + nextBrush.geometry.groups.length);
                 disposeCSGBrush(brush);
                 brush = nextBrush;
                 success++;
