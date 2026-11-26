@@ -3358,10 +3358,16 @@ function extractSvgVectorContours(source, viewBox) {
             // close the sampled outline for the native solid-cut pipeline.
             // Keep SVG outlines detailed enough for machining while preventing
             // thousands of tiny CSG triangles per contour from freezing the UI.
-            const count = Math.max(20, Math.min(1400, Math.ceil(length / Math.max(vw, vh) * 260)));
-            if (sampled + count > 10000) throw new Error('Слишком сложный SVG: после оптимизации превышен лимит 10000 точек');
+            // Allocate samples by actual path length. A fixed minimum of 20 points
+            // per SVG element made files with many small, simple shapes hit the
+            // global limit even when their real geometry was lightweight.
+            const minCount = (explicitlyClosed || hasFill) ? 4 : 2;
+            const count = Math.max(minCount, Math.min(1400, Math.ceil(length / Math.max(vw, vh) * 260)));
             const matrix = node.getCTM();
             if (!matrix) continue;
+            if (sampled + count > 10000) {
+                throw new Error('SVG содержит слишком много геометрии: превышен безопасный лимит 10000 точек. Уменьши количество отдельных элементов или упрости контуры.');
+            }
             const points = [];
             for (let i = 0; i < count; i++) {
                 const p = node.getPointAtLength(length * i / (explicitlyClosed ? count : count - 1));
