@@ -508,13 +508,7 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
         <div class="checkbox-row">
             <label><input type="checkbox" id="relief-invert"> Инвертировать рельеф</label>
         </div>
-        <label>Метод построения:
-            <select id="relief-build-method">
-                <option value="csg">Текущий CSG — вырезание в камне</option>
-                <option value="surface-test">Поверхностный тест — показать на стеле</option>
-            </select>
-        </label>
-        <div class="draw-instructions">Поверхностный тест — экспериментальный визуальный режим. Он не меняет исходную сетку и не влияет на STL-экспорт.</div>
+        <div class="draw-instructions">Быстрый просмотр показывает все добавленные рисунки одновременно. Для настоящей резки отметь нужные галочками и нажми «Вырезать выбранные».</div>
         <div class="btn-row" style="margin-top:8px;">
             <button id="btn-build-image-relief" class="primary" disabled>👁 Обновить быстрый просмотр</button>
             <button id="btn-remove-image-relief" class="danger" disabled>Удалить просмотр</button>
@@ -5078,7 +5072,8 @@ async function runCSG(cutters, label, onSuccess, operation = null, onProgress = 
         let success = 0;
 
         setStatus('⏳ Выполнение CSG: ' + cutters.length + ' операция(й)…');
-        cutters.forEach((c, idx) => {
+        for (let idx = 0; idx < cutters.length; idx++) {
+            const c = cutters[idx];
             try {
                 // Ensure both operands have complete spatial bounds before BVH construction.
                 if (!brush.geometry.boundingBox) brush.geometry.computeBoundingBox();
@@ -5116,6 +5111,7 @@ async function runCSG(cutters, label, onSuccess, operation = null, onProgress = 
                 brush = nextBrush;
                 success++;
                 if (onProgress) onProgress(idx + 1, cutters.length, evaluateMs);
+                await new Promise(resolve => requestAnimationFrame(resolve));
             } catch (e) {
                 log('CSG #' + (idx + 1) + ': ' + e.message);
                 if (strictCutters) throw e;
@@ -5136,7 +5132,7 @@ async function runCSG(cutters, label, onSuccess, operation = null, onProgress = 
             } finally {
                 disposeCSGBrush(c);
             }
-        });
+        }
 
         if (!success) throw new Error('Ни одна CSG-операция не выполнена');
         const finalGeometry = brush.geometry;
@@ -7320,110 +7316,32 @@ function removeImageRelief() {
 
 document.getElementById('btn-build-image-relief').addEventListener('click', async () => {
     if (!stellaMesh) return document.getElementById('relief-status').textContent = 'Сначала создай стелу.';
-    if (!reliefItems.length) return document.getElementById('relief-status').textContent = 'Сначала добавь рисунки.';
-    const buildMethod = document.getElementById('relief-build-method')?.value || 'csg';
-    if (buildMethod === 'surface-test') {
-        const buildButton = document.getElementById('btn-build-image-relief');
-        const removeButton = document.getElementById('btn-remove-image-relief');
-        buildButton.disabled = true;
-        removeButton.disabled = true;
-        try {
-            const started = performance.now();
-            clearImageReliefSurfaceTest();
-            disposeImageReliefPreview();
-            let totalTriangles=0;
-            const previewItems=reliefItems.filter(item=>!item.cut);
-            for(let i=0;i<previewItems.length;i++){
-                const item=previewItems[i];
-                const result=buildImageReliefSurfaceTest(item);
-                totalTriangles+=result.triangles;
-                log('[SURFACE TEST] '+(i+1)+'/'+previewItems.length+' '+item.name+': '+result.triangles.toLocaleString('ru-RU')+' triangles');
-            }
-            removeButton.disabled = false;
-            document.getElementById('relief-status').textContent =
-                'Быстрый поверхностный просмотр: '+previewItems.length+' рисунков, '+totalTriangles.toLocaleString('ru-RU')+' треугольников. Это визуальный тест, не геометрия для экспорта.';
-            log('[SURFACE TEST] batch preview: ' + (performance.now()-started).toFixed(1) + ' ms');
-        } catch (error) {
-            document.getElementById('relief-status').textContent = 'Ошибка поверхностного теста: ' + error.message;
-            log('[SURFACE TEST] ' + error.stack);
-        } finally {
-            buildButton.disabled = !stellaMesh || !reliefItems.length;
-            updateReliefBatchButtons();
+    const previewItems=reliefItems.filter(item=>!item.cut);
+    if (!previewItems.length) return document.getElementById('relief-status').textContent = 'Сначала добавь рисунки.';
+    const buildButton=document.getElementById('btn-build-image-relief');
+    const removeButton=document.getElementById('btn-remove-image-relief');
+    buildButton.disabled=true;removeButton.disabled=true;
+    try{
+        const started=performance.now();
+        clearImageReliefSurfaceTest();
+        disposeImageReliefPreview();
+        let totalTriangles=0;
+        for(let i=0;i<previewItems.length;i++){
+            const item=previewItems[i];
+            const result=buildImageReliefSurfaceTest(item);
+            totalTriangles+=result.triangles;
+            log('[SURFACE TEST] '+(i+1)+'/'+previewItems.length+' '+item.name+': '+result.triangles.toLocaleString('ru-RU')+' triangles');
+            document.getElementById('relief-status').textContent='Строю быстрый просмотр '+(i+1)+' из '+previewItems.length+': '+item.name;
+            await new Promise(resolve=>requestAnimationFrame(resolve));
         }
-        return;
-    }
-    if (!csgAvailable) return document.getElementById('relief-status').textContent = 'Булев модуль не загружен — вырезание в камне недоступно.';
-    document.getElementById('relief-status').textContent='Для настоящей резки используй кнопку «Вырезать выбранные».';
-    return;
-    const buildButton = document.getElementById('btn-build-image-relief');
-    const removeButton = document.getElementById('btn-remove-image-relief');
-    buildButton.disabled = true;
-    removeButton.disabled = true;
-    try {
-        const reliefTotalStartedAt = performance.now();
-        stellaMesh.geometry.computeBoundingBox();
-        const cutterBuildStartedAt = performance.now();
-        const geometry = buildImageReliefCutterGeometry(
-            reliefSourceImage, stellaMesh.geometry.boundingBox,
-            Number(reliefDepthInput.value) / 1000,
-            Number(reliefSizeInput.value), Number(reliefBlurInput.value),
-            reliefInvertInput.checked, Number(reliefResolutionInput.value), getImageReliefPlacement()
-        );
-        const cutterBuildMs = performance.now() - cutterBuildStartedAt;
-        const cutterPositionCount = geometry.getAttribute('position')?.count || 0;
-        const cutterTriangleCount = geometry.index
-            ? Math.floor(geometry.index.count / 3)
-            : Math.floor(cutterPositionCount / 3);
-        log('[CSG PERF] cutter geometry build: ' + cutterBuildMs.toFixed(1) +
-            ' ms; vertices=' + cutterPositionCount.toLocaleString('ru-RU') +
-            '; triangles=' + cutterTriangleCount.toLocaleString('ru-RU'));
-        const geometryOptimization = geometry.userData && geometry.userData.imageReliefOptimization;
-        if (geometryOptimization) {
-            const reduction = geometryOptimization.estimatedOriginalTriangleCount > 0
-                ? geometryOptimization.savedTriangleCount / geometryOptimization.estimatedOriginalTriangleCount * 100
-                : 0;
-            log('[CSG PERF] local mesh reduction: saved=' +
-                geometryOptimization.savedTriangleCount.toLocaleString('ru-RU') +
-                ' triangles (' + reduction.toFixed(1) + '%); smoothBlocks=' +
-                geometryOptimization.simplifiedBottomBlocks.toLocaleString('ru-RU') +
-                '; fullMaskBlocks=' + geometryOptimization.fullMaskBlocks.toLocaleString('ru-RU') +
-                '; heightTolerance=' + (geometryOptimization.heightErrorTolerance * 1000).toFixed(3) + ' mm');
-        }
-        prepareImageReliefBVH(geometry);
-        const cutter = new Brush(geometry);
-        cutter.material = getCSGMaterials();
-        cutter.position.copy(stellaMesh.position);
-        cutter.quaternion.copy(stellaMesh.quaternion);
-        cutter.scale.copy(stellaMesh.scale);
-        cutter.updateMatrixWorld(true);
-
-        const vertices = geometry.getAttribute('position').count;
-        document.getElementById('relief-status').textContent =
-            'Подготовлен режущий объём (' + vertices.toLocaleString('ru-RU') +
-            ' вершин). Выполняется вычитание из тела стелы…';
-        const useAssemblyUndo = !!(selectedAssemblyTarget && !(assemblyItems.find(item => item.root === selectedAssemblyTarget) || {}).isPrimary);
-        const undoDepthBeforeRelief = useAssemblyUndo ? assemblyUndoStack.length : undoStack.length;
-        const onReliefSuccess = () => {
-            disposeImageReliefPreview();
-            const activeUndoStack = useAssemblyUndo ? assemblyUndoStack : undoStack;
-            imageReliefUndoState = activeUndoStack.length > undoDepthBeforeRelief ? activeUndoStack[activeUndoStack.length - 1] : null;
-            removeButton.disabled = !imageReliefUndoState;
-            document.getElementById('relief-status').textContent =
-                'Изображение вырезано непосредственно в геометрии стелы. Его можно удалить кнопкой «Удалить рельеф», пока не выполнены другие операции.';
-            setStatus('Рельеф выфрезерован в поверхности стелы.');
-        };
-        const ok = await runCSG([cutter], 'Рельеф по изображению', onReliefSuccess, SUBTRACTION);
-        if (!ok) {
-            document.getElementById('relief-status').textContent =
-                'Не удалось выполнить вычитание. Проверь пересечение с лицевой поверхностью и доступность памяти.';
-        }
-        log('[CSG PERF] image relief total (including cutter build): ' +
-            (performance.now() - reliefTotalStartedAt).toFixed(1) + ' ms');
-    } catch (error) {
-        log('Рельеф по изображению: ' + error.message);
-        document.getElementById('relief-status').textContent = 'Ошибка построения: ' + error.message;
-    } finally {
-        buildButton.disabled = !stellaMesh || !reliefItems.length;
+        removeButton.disabled=false;
+        document.getElementById('relief-status').textContent='Быстрый просмотр: '+previewItems.length+' рисунков, '+totalTriangles.toLocaleString('ru-RU')+' треугольников. Это визуализация, не геометрия для экспорта.';
+        log('[SURFACE TEST] batch preview: '+(performance.now()-started).toFixed(1)+' ms');
+    }catch(error){
+        document.getElementById('relief-status').textContent='Ошибка поверхностного просмотра: '+error.message;
+        log('[SURFACE TEST] '+error.stack);
+    }finally{
+        buildButton.disabled=!stellaMesh||!reliefItems.length;
         updateReliefBatchButtons();
     }
 });
