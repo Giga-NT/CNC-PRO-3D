@@ -7163,7 +7163,6 @@ function clearImageReliefSurfaceTest() {
 function buildImageReliefSurfaceTest() {
     if (!stellaMesh || !reliefSourceImage) throw new Error('Сначала создай стелу и выбери изображение.');
     clearImageReliefSurfaceTest();
-    const stoneBox = new THREE.Box3().setFromObject(stellaMesh);
     // Geometry and placement are expressed in the stela's local coordinates.
     stellaMesh.geometry.computeBoundingBox();
     const box = stellaMesh.geometry.boundingBox;
@@ -7221,7 +7220,7 @@ function buildImageReliefSurfaceTest() {
         vertexDepth[y*(nx+1)+x]=depth*level*mask*fade;
         const a=Math.max(0,Math.min(255,Math.round((mask>threshold/255 ? mask : 0)*255)));
         const mk=(y*(nx+1)+x)*4;
-        maskData.data[mk]=255; maskData.data[mk+1]=255; maskData.data[mk+2]=255; maskData.data[mk+3]=a;
+        maskData.data[mk]=a; maskData.data[mk+1]=a; maskData.data[mk+2]=a; maskData.data[mk+3]=255;
     }
     maskCtx.putImageData(maskData,0,0);
     for (let y=0; y<=ny; y++) for (let x=0; x<=nx; x++) {
@@ -7244,7 +7243,6 @@ function buildImageReliefSurfaceTest() {
     geometry.setIndex(indices);
     geometry.computeVertexNormals();
     const maskTexture=new THREE.CanvasTexture(maskCanvas);
-    maskTexture.colorSpace=THREE.SRGBColorSpace;
     maskTexture.generateMipmaps=true;
     maskTexture.minFilter=THREE.LinearMipmapLinearFilter;
     const material=new THREE.MeshStandardMaterial({
