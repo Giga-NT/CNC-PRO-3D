@@ -4984,7 +4984,7 @@ function createAssemblyTargetBrush(mesh, csgMaterials = getAssemblyCSGMaterials(
     return brush;
 }
 
-async function runCSG(cutters, label, onSuccess, operation = null) {
+async function runCSG(cutters, label, onSuccess, operation = null, onProgress = null, strictCutters = false) {
     const csgTotalStartedAt = performance.now();
     const selectedItem = selectedAssemblyTarget
         ? assemblyItems.find(item => item.root === selectedAssemblyTarget)
@@ -5115,8 +5115,10 @@ async function runCSG(cutters, label, onSuccess, operation = null) {
                 disposeCSGBrush(brush);
                 brush = nextBrush;
                 success++;
+                if (onProgress) onProgress(idx + 1, cutters.length, evaluateMs);
             } catch (e) {
                 log('CSG #' + (idx + 1) + ': ' + e.message);
+                if (strictCutters) throw e;
                 if (e && e.stack) console.error('[CSG STACK]', e.stack);
                 console.error('[CSG GEOMETRY DIAG]', {
                     targetIndexCount: brush && brush.geometry && brush.geometry.index ? brush.geometry.index.count : null,
@@ -7188,11 +7190,10 @@ function buildImageReliefSurfaceTest(item) {
     // Geometry and placement are expressed in the stela's local coordinates.
     stellaMesh.geometry.computeBoundingBox();
     const box = stellaMesh.geometry.boundingBox;
-    const placement = itemSettings.placement;
     const aspect = sourceImage.naturalWidth / sourceImage.naturalHeight;
     const maxWidth = box.max.x - box.min.x;
     const maxHeight = box.max.y - box.min.y;
-    const fitWidth = maxWidth * Number(reliefSizeInput.value) / 100;
+    const fitWidth = maxWidth * Number(itemSettings.size) / 100;
     const fitHeight = maxHeight * 0.68;
     const width = Number(placement.width) > 0 ? Number(placement.width) : Math.min(fitWidth, fitHeight * aspect);
     const height = width / aspect;
@@ -7463,7 +7464,11 @@ document.getElementById('btn-cut-selected-reliefs').addEventListener('click', as
             imageReliefUndoState=stack.length>undoDepthBefore?stack[stack.length-1]:null;
             document.getElementById('btn-remove-image-relief').disabled=true;
             document.getElementById('relief-status').textContent='Готово: вырезано '+chosen.length+' рисунков. Неотмеченные удалены из списка. Общая операция доступна для отмены.';
-        },SUBTRACTION);
+        },SUBTRACTION,(done,total,evaluateMs)=>{
+            const elapsed=(performance.now()-started)/1000,ratio=done/total,remaining=done?elapsed/done*(total-done):0;
+            fill.style.width=(ratio*100).toFixed(0)+'%';label.textContent='Вырезано '+done+' из '+total+' · '+chosen[done-1].name;
+            time.textContent='Прошло: '+elapsed.toFixed(1)+' с · Осталось примерно: '+remaining.toFixed(1)+' с · CSG: '+(evaluateMs/1000).toFixed(1)+' с';
+        },true);
         if(!ok)throw new Error('CSG не подтвердил успешное завершение пакета. Исходная геометрия должна остаться без изменений.');
         fill.style.width='100%';label.textContent='Пакетная резка завершена';time.textContent='Общее время: '+((performance.now()-started)/1000).toFixed(1)+' с';
     }catch(error){
