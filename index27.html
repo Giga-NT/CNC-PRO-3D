@@ -484,9 +484,13 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
         <label>Детализация сетки: <span class="val" id="relief-resolution-value">384</span>
             <input type="range" id="relief-resolution" min="128" max="640" step="32" value="384">
         </label>
-        <label>Глубина рельефа: <span class="val" id="relief-depth-value">8</span> мм
+        <label>Глубина резьбы: <span class="val" id="relief-depth-value">8</span> мм
             <input type="range" id="relief-depth" min="1" max="30" step="1" value="8">
         </label>
+        <label>Высота рельефа: <span class="val" id="relief-height-value">7.0</span> мм
+            <input type="range" id="relief-height" min="0" max="7" step="0.1" value="7">
+        </label>
+        <div class="draw-instructions">Высота задаёт перепад между самой мелкой и самой глубокой точками. Максимум — глубина резьбы минус 1 мм.</div>
         <label>Ширина рисунка: <span class="val" id="relief-size-value">75</span>%
             <input type="range" id="relief-size" min="20" max="100" step="1" value="75">
         </label>
@@ -6746,6 +6750,8 @@ let reliefBatchRunning = false;
 
 const reliefFileInput = document.getElementById('relief-image-file');
 const reliefDepthInput = document.getElementById('relief-depth');
+const reliefHeightInput = document.getElementById('relief-height');
+let lastReliefDepthValue = Number(reliefDepthInput.value);
 const reliefSizeInput = document.getElementById('relief-size');
 const reliefBlurInput = document.getElementById('relief-blur');
 const reliefInvertInput = document.getElementById('relief-invert');
@@ -6755,10 +6761,10 @@ const reliefWidthInput=document.getElementById('relief-width'), reliefRotationIn
 let imageReliefSide='front', imageReliefPreviewTexture=null;
 const reliefModeInput=document.getElementById('relief-mode');
 function getImageReliefPlacement(){return{x:Number(reliefPosXInput.value)||0,y:Number(reliefPosYInput.value)||0,width:Math.max(.01,Number(reliefWidthInput.value)||.30),rotation:Number(reliefRotationInput.value)||0,side:imageReliefSide,mode:reliefModeInput.value};}
-function getReliefSettings(){return{depth:Number(reliefDepthInput.value),size:Number(reliefSizeInput.value),blur:Number(reliefBlurInput.value),invert:!!reliefInvertInput.checked,resolution:Number(reliefResolutionInput.value),placement:getImageReliefPlacement()};}
+function getReliefSettings(){return{depth:Number(reliefDepthInput.value),height:Number(reliefHeightInput.value),size:Number(reliefSizeInput.value),blur:Number(reliefBlurInput.value),invert:!!reliefInvertInput.checked,resolution:Number(reliefResolutionInput.value),placement:getImageReliefPlacement()};}
 function getActiveReliefItem(){return reliefItems.find(item=>item.id===reliefActiveItemId)||null;}
 function saveActiveReliefSettings(){const item=getActiveReliefItem();if(!item)return;item.settings=getReliefSettings();updateImageReliefPreview();}
-function loadReliefItem(item){if(!item)return;reliefActiveItemId=item.id;reliefSourceImage=item.image;reliefSourceName=item.name;const q=item.settings;reliefDepthInput.value=q.depth;reliefSizeInput.value=q.size;reliefBlurInput.value=q.blur;reliefInvertInput.checked=q.invert;reliefResolutionInput.value=q.resolution;reliefPosXInput.value=q.placement.x;reliefPosYInput.value=q.placement.y;reliefWidthInput.value=q.placement.width;reliefRotationInput.value=q.placement.rotation;imageReliefSide=q.placement.side;reliefModeInput.value=q.placement.mode;document.getElementById('relief-side-front').classList.toggle('active-tool',imageReliefSide==='front');document.getElementById('relief-side-back').classList.toggle('active-tool',imageReliefSide==='back');updateReliefControls();document.getElementById('relief-image-name').textContent=item.name+' · '+item.image.naturalWidth+' × '+item.image.naturalHeight;renderReliefItemList();updateImageReliefPreview();}
+function loadReliefItem(item){if(!item)return;reliefActiveItemId=item.id;reliefSourceImage=item.image;reliefSourceName=item.name;const q=item.settings;reliefDepthInput.value=q.depth;lastReliefDepthValue=Number(q.depth)||1;reliefHeightInput.value=Number.isFinite(Number(q.height))?q.height:Math.max(0,Number(q.depth)-1);reliefSizeInput.value=q.size;reliefBlurInput.value=q.blur;reliefInvertInput.checked=q.invert;reliefResolutionInput.value=q.resolution;reliefPosXInput.value=q.placement.x;reliefPosYInput.value=q.placement.y;reliefWidthInput.value=q.placement.width;reliefRotationInput.value=q.placement.rotation;imageReliefSide=q.placement.side;reliefModeInput.value=q.placement.mode;document.getElementById('relief-side-front').classList.toggle('active-tool',imageReliefSide==='front');document.getElementById('relief-side-back').classList.toggle('active-tool',imageReliefSide==='back');updateReliefControls();document.getElementById('relief-image-name').textContent=item.name+' · '+item.image.naturalWidth+' × '+item.image.naturalHeight;renderReliefItemList();updateImageReliefPreview();}
 function renderReliefItemList(){const host=document.getElementById('relief-image-list');host.innerHTML='';for(const item of reliefItems){const row=document.createElement('div');row.style.cssText='display:flex;align-items:center;gap:6px;padding:6px;background:var(--input-bg);border:1px solid '+(item.id===reliefActiveItemId?'var(--accent)':'var(--border)')+';border-radius:4px;';const check=document.createElement('input');check.type='checkbox';check.checked=item.selected;check.disabled=reliefBatchRunning;check.title='Включить в пакетную резку';check.addEventListener('change',()=>{item.selected=check.checked;updateReliefBatchButtons();});const select=document.createElement('button');select.type='button';select.textContent=item.name+(item.cut?' · вырезан':'');select.style.cssText='flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;margin:0;';select.disabled=reliefBatchRunning;select.addEventListener('click',()=>loadReliefItem(item));const del=document.createElement('button');del.type='button';del.textContent='✕';del.className='danger';del.style.cssText='flex:0 0 28px;margin:0;padding:4px;';del.disabled=reliefBatchRunning;del.addEventListener('click',()=>removeReliefItem(item.id));row.append(check,select,del);host.appendChild(row);}document.getElementById('relief-image-name').textContent=reliefItems.length?('Добавлено рисунков: '+reliefItems.length):'Рисунки не добавлены';updateReliefBatchButtons();}
 function updateReliefBatchButtons(){const any=reliefItems.some(x=>x.selected);document.getElementById('btn-cut-selected-reliefs').disabled=!any||!stellaMesh||!csgAvailable||reliefBatchRunning;document.getElementById('btn-build-image-relief').disabled=!reliefItems.length||!stellaMesh||reliefBatchRunning;document.getElementById('btn-remove-image-relief').disabled=!imageReliefSurfaceTestMeshes.length||reliefBatchRunning;}
 function removeReliefItem(id){const i=reliefItems.findIndex(x=>x.id===id);if(i<0)return;const item=reliefItems[i];if(item.image&&item.image.__objectUrl)URL.revokeObjectURL(item.image.__objectUrl);if(item.previewMesh){scene.remove(item.previewMesh);item.previewMesh.geometry.dispose();item.previewMesh.material.map?.dispose();item.previewMesh.material.dispose();}if(item.surfaceMesh){item.surfaceMesh.parent?.remove(item.surfaceMesh);item.surfaceMesh.geometry.dispose();item.surfaceMesh.material.dispose();}reliefItems.splice(i,1);if(reliefActiveItemId===id){const next=reliefItems[0];reliefActiveItemId=null;reliefSourceImage=null;if(next)loadReliefItem(next);}renderReliefItemList();updateImageReliefPreview();}
@@ -6791,17 +6797,31 @@ function syncReliefWidthFromPercent(){
  const aspect=reliefSourceImage.naturalWidth/reliefSourceImage.naturalHeight;
  reliefWidthInput.value=Math.max(.01,Math.min((box.max.x-box.min.x)*Number(reliefSizeInput.value)/100,(box.max.y-box.min.y)*.68*aspect)).toFixed(3);
 }
-[reliefPosXInput,reliefPosYInput,reliefWidthInput,reliefRotationInput,reliefDepthInput,reliefSizeInput,reliefBlurInput,reliefInvertInput,reliefResolutionInput].forEach(input=>input.addEventListener('input',()=>{updateReliefControls();if(input===reliefSizeInput)syncReliefWidthFromPercent();saveActiveReliefSettings();}));
+[reliefPosXInput,reliefPosYInput,reliefWidthInput,reliefRotationInput,reliefHeightInput,reliefSizeInput,reliefBlurInput,reliefInvertInput,reliefResolutionInput].forEach(input=>input.addEventListener('input',()=>{updateReliefControls();if(input===reliefSizeInput)syncReliefWidthFromPercent();saveActiveReliefSettings();}));
+reliefDepthInput.addEventListener('input',()=>{
+    const nextDepth=Number(reliefDepthInput.value)||1;
+    const currentHeight=Number(reliefHeightInput.value)||0;
+    const scaledHeight=lastReliefDepthValue>0?currentHeight*(nextDepth/lastReliefDepthValue):Math.max(0,nextDepth-1);
+    reliefHeightInput.value=Math.min(Math.max(0,nextDepth-1),Math.max(0,scaledHeight)).toFixed(1);
+    lastReliefDepthValue=nextDepth;
+    updateReliefControls();
+    saveActiveReliefSettings();
+});
 document.getElementById('relief-side-front').addEventListener('click',()=>{imageReliefSide='front';document.getElementById('relief-side-front').classList.add('active-tool');document.getElementById('relief-side-back').classList.remove('active-tool');updateImageReliefPreview();});
 document.getElementById('relief-side-back').addEventListener('click',()=>{imageReliefSide='back';document.getElementById('relief-side-back').classList.add('active-tool');document.getElementById('relief-side-front').classList.remove('active-tool');updateImageReliefPreview();});
 
 function updateReliefControls() {
-    document.getElementById('relief-depth-value').textContent = reliefDepthInput.value;
+    const depthMm = Math.max(1, Number(reliefDepthInput.value) || 1);
+    const maxHeightMm = Math.max(0, depthMm - 1);
+    reliefHeightInput.max = maxHeightMm.toFixed(1);
+    if (Number(reliefHeightInput.value) > maxHeightMm) reliefHeightInput.value = maxHeightMm.toFixed(1);
+    document.getElementById('relief-depth-value').textContent = depthMm.toFixed(0);
+    document.getElementById('relief-height-value').textContent = Number(reliefHeightInput.value).toFixed(1);
     document.getElementById('relief-size-value').textContent = reliefSizeInput.value;
     document.getElementById('relief-blur-value').textContent = reliefBlurInput.value;
     document.getElementById('relief-resolution-value').textContent = reliefResolutionInput.value;
 }
-[reliefDepthInput, reliefSizeInput, reliefBlurInput, reliefResolutionInput].forEach(input =>
+[reliefHeightInput, reliefSizeInput, reliefBlurInput, reliefResolutionInput].forEach(input =>
     input.addEventListener('input', updateReliefControls)
 );
 updateReliefControls();
@@ -6851,7 +6871,7 @@ function prepareImageReliefBVH(geometry) {
     }
 }
 
-function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPercent, blur, invert, resolution, placement = {}) {
+function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPercent, blur, invert, resolution, placement = {}, reliefHeightMeters = null) {
     const maxWidth = stoneBox.max.x - stoneBox.min.x;
     const maxHeight = stoneBox.max.y - stoneBox.min.y;
     if (!(maxWidth > 0 && maxHeight > 0)) throw new Error('Не удалось определить размеры лицевой поверхности.');
@@ -6864,6 +6884,11 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
     const centerY = Number.isFinite(Number(placement.y)) ? Number(placement.y) : 0;
     const rotation = (Number(placement.rotation) || 0) * Math.PI / 180;
     const side = placement.side === 'back' ? 'back' : 'front';
+    const maxReliefHeightMeters = Math.max(0, depthMeters - 0.001);
+    const requestedReliefHeight = Number.isFinite(Number(reliefHeightMeters))
+        ? Number(reliefHeightMeters) : maxReliefHeightMeters;
+    const reliefHeight = Math.max(0, Math.min(maxReliefHeightMeters, requestedReliefHeight));
+    const shallowBaseDepth = depthMeters - reliefHeight;
     if (!(width > 0 && height > 0)) throw new Error('Некорректные размеры изображения.');
 
     // Сетка задаёт только исходные отсчёты высоты. Граница объекта строится
@@ -6996,13 +7021,14 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
             const smooth = t * t * (3 - 2 * t);
             const tone = Math.max(0, Math.min(1, (gray - grayLow) / Math.max(0.001, grayHigh - grayLow)));
             const toneCut = invert ? tone : 1 - tone;
-            // У границы — глубокая разделительная канавка; в центре — более мелкая
-            // выборка, поэтому элементы визуально остаются выпуклыми.
-            bottomDepth = 0.00015 + depthMeters * (0.82 - 0.48 * smooth + 0.16 * toneCut);
-            bottomDepth = Math.max(depthMeters * 0.22, Math.min(depthMeters * 0.98, bottomDepth));
+            // Сохраняем рисунок перепадов, но масштабируем его в заданную
+            // пользователем высоту. Вся поверхность остаётся ниже поверхности стелы.
+            const originalShape = Math.max(0.22, Math.min(0.98, 0.82 - 0.48 * smooth + 0.16 * toneCut));
+            const normalizedShape = (originalShape - 0.22) / 0.76;
+            bottomDepth = shallowBaseDepth + normalizedShape * reliefHeight;
         } else {
-            const level = (invert ? 1 - gray : gray);
-            bottomDepth = 0.00015 + Math.max(0, level) * depthMeters;
+            const level = Math.max(0, Math.min(1, invert ? 1 - gray : gray));
+            bottomDepth = shallowBaseDepth + level * reliefHeight;
         }
         return { x: point.x, y: point.y, s: value, gray, depth: bottomDepth, u: px, v: 1 - py, gx, gy };
     };
@@ -7236,6 +7262,11 @@ function buildImageReliefSurfaceTest(item) {
     const faceZ = side === 'back' ? box.min.z : box.max.z;
     const direction = side === 'back' ? 1 : -1;
     const depth = Number(itemSettings.depth) / 1000;
+    const maxReliefHeight = Math.max(0, depth - 0.001);
+    const requestedReliefHeight = Number.isFinite(Number(itemSettings.height))
+        ? Number(itemSettings.height) / 1000 : maxReliefHeight;
+    const reliefHeight = Math.max(0, Math.min(maxReliefHeight, requestedReliefHeight));
+    const shallowBaseDepth = depth - reliefHeight;
     const requestedResolution = Math.max(128, Math.min(640, Number(itemSettings.resolution) || 384));
     const nx = Math.max(96, Math.min(640, Math.round(requestedResolution * Math.min(1, aspect))));
     const ny = Math.max(96, Math.min(640, Math.round(requestedResolution / Math.max(0.01, aspect))));
@@ -7272,7 +7303,7 @@ function buildImageReliefSurfaceTest(item) {
         const level=itemSettings.invert ? 1-gray : gray;
         const edge=Math.min(x,y,nx-x,ny-y);
         const fade=Math.max(0,Math.min(1,(edge-1)/Math.max(2,Math.min(nx,ny)*0.025)));
-        vertexDepth[y*(nx+1)+x]=depth*level*mask*fade;
+        vertexDepth[y*(nx+1)+x]=(shallowBaseDepth+level*reliefHeight)*mask*fade;
         const a=Math.max(0,Math.min(255,Math.round((mask>threshold/255 ? mask : 0)*255)));
         const mk=(y*(nx+1)+x)*4;
         maskData.data[mk]=a; maskData.data[mk+1]=a; maskData.data[mk+2]=a; maskData.data[mk+3]=255;
@@ -7397,7 +7428,7 @@ document.getElementById('btn-cut-selected-reliefs').addEventListener('click', as
         stellaMesh.geometry.computeBoundingBox();
         for(let i=0;i<chosen.length;i++){
             const item=chosen[i];label.textContent='Подготовка резца '+(i+1)+' из '+chosen.length+': '+item.name;
-            const geometry=buildImageReliefCutterGeometry(item.image,stellaMesh.geometry.boundingBox,item.settings.depth/1000,item.settings.size,item.settings.blur,item.settings.invert,item.settings.resolution,item.settings.placement);
+            const geometry=buildImageReliefCutterGeometry(item.image,stellaMesh.geometry.boundingBox,item.settings.depth/1000,item.settings.size,item.settings.blur,item.settings.invert,item.settings.resolution,item.settings.placement,(Number.isFinite(Number(item.settings.height))?Number(item.settings.height):Math.max(0,item.settings.depth-1))/1000);
             prepareImageReliefBVH(geometry);
             const cutter=new Brush(geometry);
             // Image cutter must contribute only the rough-cut material.
