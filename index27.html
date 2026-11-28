@@ -6850,8 +6850,9 @@ function smoothReliefSculptSurface(){
         return nearest;
     };
     const normals=geometry.getAttribute('normal')|| (geometry.computeVertexNormals(),geometry.getAttribute('normal'));
-    const localIds=new Map(),coords=[],neighbors=[],weights=[];
+    const localIds=new Map(),coords=[],neighbors=[],weights=[],vertexMap=new Map();
     const keyFor=(x,y,z)=>Math.round(x*1e6)+','+Math.round(y*1e6)+','+Math.round(z*1e6);
+    for(let v=0;v<position.count;v++){const key=keyFor(position.getX(v),position.getY(v),position.getZ(v));if(!vertexMap.has(key))vertexMap.set(key,[]);vertexMap.get(key).push(v);}
     const getLocalId=(index)=>{
         const x=position.getX(index),y=position.getY(index),z=position.getZ(index);
         const key=keyFor(x,y,z);
@@ -6902,19 +6903,11 @@ function smoothReliefSculptSurface(){
         const w=weights[i];
         if(w<0.015)continue;
         const x=coords[i*3],y=coords[i*3+1];
-        const gx=Math.floor(x/cell),gy=Math.floor(y/cell);
-        for(let ox=-1;ox<=1;ox++)for(let oy=-1;oy<=1;oy++){
-            const bucket=buckets.get((gx+ox)+','+(gy+oy));if(!bucket)continue;
-        }
-        // Welded positions can occur more than once in non-indexed geometry.
+        // Weld coincident vertices in non-indexed geometry through a prebuilt lookup.
         const oldZ=coords[i*3+2],delta=(z[i]-oldZ)*w;
         if(Math.abs(delta)<1e-9)continue;
-        const key=keyFor(x,y,oldZ);
-        for(let v=0;v<position.count;v++){
-            if(keyFor(position.getX(v),position.getY(v),position.getZ(v))===key){
-                position.setZ(v,position.getZ(v)+delta);changed++;
-            }
-        }
+        const indices=vertexMap.get(keyFor(x,y,oldZ))||[];
+        for(const v of indices){position.setZ(v,position.getZ(v)+delta);changed++;}
     }
     if(!changed){
         undoStack.pop();
