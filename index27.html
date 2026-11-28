@@ -6743,7 +6743,7 @@ document.getElementById('btn-sculpt-clear').addEventListener('click',()=>{
     sculptPickButton.textContent='🖌️ Рисовать область';
     document.getElementById('sculpt-status').textContent='Область не выделена';
 });
-function refineSculptRegionGeometry(source, samples, radius, side){
+function refineSculptRegionGeometry(source, samples, radius, side, pass=0){
     let geometry=source;
     let temporary=null;
     if(geometry.index){temporary=geometry.toNonIndexed();geometry=temporary;}
@@ -6772,14 +6772,14 @@ function refineSculptRegionGeometry(source, samples, radius, side){
         }
         return nearest;
     };
-    const maxSplits=60000,targetEdge=Math.max(radius*0.32,0.004);
+    const maxSplits=30000,targetEdge=Math.max(radius*0.10,0.0015);
     const splitFlags=new Uint8Array(triCount);let splitCount=0;
     const normals=geometry.getAttribute('normal');
     for(let t=0;t<triCount;t++){
         const a=t*3,b=a+1,c=a+2;
         const cx=(pos.getX(a)+pos.getX(b)+pos.getX(c))/3;
         const cy=(pos.getY(a)+pos.getY(b)+pos.getY(c))/3;
-        if(nearestAt(cx,cy)>radius*0.85)continue;
+        if(nearestAt(cx,cy)>radius*1.20)continue;
         if(normals&&side*(normals.getZ(a)+normals.getZ(b)+normals.getZ(c))/3<0.2)continue;
         const ab=Math.hypot(pos.getX(a)-pos.getX(b),pos.getY(a)-pos.getY(b),pos.getZ(a)-pos.getZ(b));
         const bc=Math.hypot(pos.getX(b)-pos.getX(c),pos.getY(b)-pos.getY(c),pos.getZ(b)-pos.getZ(c));
@@ -6817,6 +6817,13 @@ function refineSculptRegionGeometry(source, samples, radius, side){
     if(geometry.boundingBox)out.boundingBox=geometry.boundingBox.clone();
     if(geometry.boundingSphere)out.boundingSphere=geometry.boundingSphere.clone();
     if(temporary)temporary.dispose();
+    if(pass<2){
+        const next=refineSculptRegionGeometry(out,samples,radius,side,pass+1);
+        if(next.geometry!==out){
+            out.dispose();
+            return {geometry:next.geometry,refined:splitCount+next.refined};
+        }
+    }
     return {geometry:out,refined:splitCount};
 }
 function applyReliefSculpt(direction){
