@@ -506,9 +506,13 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
             <button type="button" id="relief-side-front" class="active-tool">⬜ Лицо</button>
             <button type="button" id="relief-side-back">⬛ Оборот</button>
         </div>
-        <label>Сглаживание: <span class="val" id="relief-blur-value">1.5</span>
+        <label>Размытие исходного изображения: <span class="val" id="relief-blur-value">1.5</span>
             <input type="range" id="relief-blur" min="0" max="5" step="0.5" value="1.5">
         </label>
+        <label>Сглаживание контура: <span class="val" id="relief-edge-smooth-value">0</span>
+            <input type="range" id="relief-edge-smooth" min="0" max="4" step="1" value="0">
+        </label>
+        <div class="draw-instructions">Сглаживает только край выреза, не размывая детали самого изображения. 0 — исходный контур.</div>
         <div class="checkbox-row">
             <label><input type="checkbox" id="relief-invert"> Инвертировать рельеф</label>
         </div>
@@ -6756,15 +6760,16 @@ const reliefSizeInput = document.getElementById('relief-size');
 const reliefBlurInput = document.getElementById('relief-blur');
 const reliefInvertInput = document.getElementById('relief-invert');
 const reliefResolutionInput = document.getElementById('relief-resolution');
+const reliefEdgeSmoothInput = document.getElementById('relief-edge-smooth');
 const reliefPosXInput=document.getElementById('relief-pos-x'), reliefPosYInput=document.getElementById('relief-pos-y');
 const reliefWidthInput=document.getElementById('relief-width'), reliefRotationInput=document.getElementById('relief-rotation');
 let imageReliefSide='front', imageReliefPreviewTexture=null;
 const reliefModeInput=document.getElementById('relief-mode');
 function getImageReliefPlacement(){return{x:Number(reliefPosXInput.value)||0,y:Number(reliefPosYInput.value)||0,width:Math.max(.01,Number(reliefWidthInput.value)||.30),rotation:Number(reliefRotationInput.value)||0,side:imageReliefSide,mode:reliefModeInput.value};}
-function getReliefSettings(){return{depth:Number(reliefDepthInput.value),height:Number(reliefHeightInput.value),size:Number(reliefSizeInput.value),blur:Number(reliefBlurInput.value),invert:!!reliefInvertInput.checked,resolution:Number(reliefResolutionInput.value),placement:getImageReliefPlacement()};}
+function getReliefSettings(){return{depth:Number(reliefDepthInput.value),height:Number(reliefHeightInput.value),size:Number(reliefSizeInput.value),blur:Number(reliefBlurInput.value),edgeSmooth:Number(reliefEdgeSmoothInput.value)||0,invert:!!reliefInvertInput.checked,resolution:Number(reliefResolutionInput.value),placement:getImageReliefPlacement()};}
 function getActiveReliefItem(){return reliefItems.find(item=>item.id===reliefActiveItemId)||null;}
 function saveActiveReliefSettings(){const item=getActiveReliefItem();if(!item)return;item.settings=getReliefSettings();updateImageReliefPreview();}
-function loadReliefItem(item){if(!item)return;reliefActiveItemId=item.id;reliefSourceImage=item.image;reliefSourceName=item.name;const q=item.settings;reliefDepthInput.value=q.depth;lastReliefDepthValue=Number(q.depth)||1;reliefHeightInput.value=Number.isFinite(Number(q.height))?q.height:Math.max(0,Number(q.depth)-1);reliefSizeInput.value=q.size;reliefBlurInput.value=q.blur;reliefInvertInput.checked=q.invert;reliefResolutionInput.value=q.resolution;reliefPosXInput.value=q.placement.x;reliefPosYInput.value=q.placement.y;reliefWidthInput.value=q.placement.width;reliefRotationInput.value=q.placement.rotation;imageReliefSide=q.placement.side;reliefModeInput.value=q.placement.mode;document.getElementById('relief-side-front').classList.toggle('active-tool',imageReliefSide==='front');document.getElementById('relief-side-back').classList.toggle('active-tool',imageReliefSide==='back');updateReliefControls();document.getElementById('relief-image-name').textContent=item.name+' · '+item.image.naturalWidth+' × '+item.image.naturalHeight;renderReliefItemList();updateImageReliefPreview();}
+function loadReliefItem(item){if(!item)return;reliefActiveItemId=item.id;reliefSourceImage=item.image;reliefSourceName=item.name;const q=item.settings;reliefDepthInput.value=q.depth;lastReliefDepthValue=Number(q.depth)||1;reliefHeightInput.value=Number.isFinite(Number(q.height))?q.height:Math.max(0,Number(q.depth)-1);reliefSizeInput.value=q.size;reliefBlurInput.value=q.blur;reliefEdgeSmoothInput.value=Number.isFinite(Number(q.edgeSmooth))?q.edgeSmooth:0;reliefInvertInput.checked=q.invert;reliefResolutionInput.value=q.resolution;reliefPosXInput.value=q.placement.x;reliefPosYInput.value=q.placement.y;reliefWidthInput.value=q.placement.width;reliefRotationInput.value=q.placement.rotation;imageReliefSide=q.placement.side;reliefModeInput.value=q.placement.mode;document.getElementById('relief-side-front').classList.toggle('active-tool',imageReliefSide==='front');document.getElementById('relief-side-back').classList.toggle('active-tool',imageReliefSide==='back');updateReliefControls();document.getElementById('relief-image-name').textContent=item.name+' · '+item.image.naturalWidth+' × '+item.image.naturalHeight;renderReliefItemList();updateImageReliefPreview();}
 function renderReliefItemList(){const host=document.getElementById('relief-image-list');host.innerHTML='';for(const item of reliefItems){const row=document.createElement('div');row.style.cssText='display:flex;align-items:center;gap:6px;padding:6px;background:var(--input-bg);border:1px solid '+(item.id===reliefActiveItemId?'var(--accent)':'var(--border)')+';border-radius:4px;';const check=document.createElement('input');check.type='checkbox';check.checked=item.selected;check.disabled=reliefBatchRunning;check.title='Включить в пакетную резку';check.addEventListener('change',()=>{item.selected=check.checked;updateReliefBatchButtons();});const select=document.createElement('button');select.type='button';select.textContent=item.name+(item.cut?' · вырезан':'');select.style.cssText='flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;margin:0;';select.disabled=reliefBatchRunning;select.addEventListener('click',()=>loadReliefItem(item));const del=document.createElement('button');del.type='button';del.textContent='✕';del.className='danger';del.style.cssText='flex:0 0 28px;margin:0;padding:4px;';del.disabled=reliefBatchRunning;del.addEventListener('click',()=>removeReliefItem(item.id));row.append(check,select,del);host.appendChild(row);}document.getElementById('relief-image-name').textContent=reliefItems.length?('Добавлено рисунков: '+reliefItems.length):'Рисунки не добавлены';updateReliefBatchButtons();}
 function updateReliefBatchButtons(){const any=reliefItems.some(x=>x.selected);document.getElementById('btn-cut-selected-reliefs').disabled=!any||!stellaMesh||!csgAvailable||reliefBatchRunning;document.getElementById('btn-build-image-relief').disabled=!reliefItems.length||!stellaMesh||reliefBatchRunning;document.getElementById('btn-remove-image-relief').disabled=!imageReliefSurfaceTestMeshes.length||reliefBatchRunning;}
 function removeReliefItem(id){const i=reliefItems.findIndex(x=>x.id===id);if(i<0)return;const item=reliefItems[i];if(item.image&&item.image.__objectUrl)URL.revokeObjectURL(item.image.__objectUrl);if(item.previewMesh){scene.remove(item.previewMesh);item.previewMesh.geometry.dispose();item.previewMesh.material.map?.dispose();item.previewMesh.material.dispose();}if(item.surfaceMesh){item.surfaceMesh.parent?.remove(item.surfaceMesh);item.surfaceMesh.geometry.dispose();item.surfaceMesh.material.dispose();}reliefItems.splice(i,1);if(reliefActiveItemId===id){const next=reliefItems[0];reliefActiveItemId=null;reliefSourceImage=null;if(next)loadReliefItem(next);}renderReliefItemList();updateImageReliefPreview();}
@@ -6773,21 +6778,43 @@ document.getElementById('btn-relief-select-all').addEventListener('click',()=>{r
 document.getElementById('btn-relief-select-none').addEventListener('click',()=>{reliefItems.forEach(x=>x.selected=false);renderReliefItemList();});
 reliefModeInput.addEventListener('change',()=>{document.getElementById('relief-mode-help').textContent=reliefModeInput.value==='ornament'?'Для плоской графики: контуры становятся более глубокими, внутренние области — выпуклыми; яркость добавляет небольшую вариацию глубины.':'Для фотографий и готовых grayscale-карт высот сохраняет перепады яркости.';});
 function disposeImageReliefPreview(){for(const item of reliefItems){if(item.previewMesh){scene.remove(item.previewMesh);item.previewMesh.geometry?.dispose();item.previewMesh.material?.map?.dispose();item.previewMesh.material?.dispose();item.previewMesh=null;}}if(imageReliefMesh){scene.remove(imageReliefMesh);imageReliefMesh.geometry?.dispose();imageReliefMesh.material?.dispose();imageReliefMesh=null;}if(imageReliefPreviewTexture){imageReliefPreviewTexture.dispose();imageReliefPreviewTexture=null;}}
-function makeImageReliefPreviewTexture(image){
+function smoothReliefMaskField(field,width,height,iterations){
+ const passes=Math.max(0,Math.min(4,Math.round(Number(iterations)||0)));
+ if(!passes)return field;
+ let src=field,dst=new Float32Array(field.length);
+ const weights=[1,2,1,2,4,2,1,2,1];
+ for(let pass=0;pass<passes;pass++){
+  for(let y=0;y<height;y++)for(let x=0;x<width;x++){
+   const i=y*width+x;
+   if(x===0||y===0||x===width-1||y===height-1){dst[i]=0;continue;}
+   let sum=0,k=0;
+   for(let oy=-1;oy<=1;oy++)for(let ox=-1;ox<=1;ox++)sum+=src[(y+oy)*width+x+ox]*weights[k++];
+   dst[i]=sum/16;
+  }
+  const swap=src;src=dst;dst=swap;
+ }
+ return src;
+}
+function makeImageReliefPreviewTexture(image,edgeSmooth=0){
  const canvas=document.createElement('canvas');canvas.width=512;canvas.height=Math.max(64,Math.round(512*image.naturalHeight/image.naturalWidth));
  const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(image,0,0,canvas.width,canvas.height);
  const frame=ctx.getImageData(0,0,canvas.width,canvas.height),d=frame.data,corners=[];
  for(const [cx,cy] of [[0,0],[1,0],[0,1],[1,1]]){let r=0,g=0,b=0,n=0;for(let yy=0;yy<8;yy++)for(let xx=0;xx<8;xx++){const x=cx?canvas.width-1-xx:xx,y=cy?canvas.height-1-yy:yy,p=(y*canvas.width+x)*4;if(d[p+3]>200){r+=d[p];g+=d[p+1];b+=d[p+2];n++;}}if(n)corners.push([r/n,g/n,b/n]);}
  const bg=[0,1,2].map(k=>corners.length?corners.reduce((v,c)=>v+c[k],0)/corners.length:255);
- for(let p=0;p<d.length;p+=4){const dr=d[p]-bg[0],dg=d[p+1]-bg[1],db=d[p+2]-bg[2];if(d[p+3]<=12||(d[p+3]>=245&&Math.sqrt(dr*dr+dg*dg+db*db)<=38))d[p+3]=0;}
+ const mask=new Float32Array(canvas.width*canvas.height);
+ for(let p=0;p<d.length;p+=4){const i=p/4,dr=d[p]-bg[0],dg=d[p+1]-bg[1],db=d[p+2]-bg[2];mask[i]=(d[p+3]<=12||(d[p+3]>=245&&Math.sqrt(dr*dr+dg*dg+db*db)<=38))?0:d[p+3]/255;}
+ const smooth=smoothReliefMaskField(mask,canvas.width,canvas.height,edgeSmooth);
+ for(let p=0;p<d.length;p+=4)d[p+3]=Math.round(smooth[p/4]*255);
  ctx.putImageData(frame,0,0);const texture=new THREE.CanvasTexture(canvas);texture.colorSpace=THREE.SRGBColorSpace;return texture;
 }
 function updateImageReliefPreview(){
  if(!stellaMesh?.geometry)return;
  stellaMesh.geometry.computeBoundingBox();const box=stellaMesh.geometry.boundingBox;
  for(const item of reliefItems){const p=item.settings.placement,image=item.image,back=p.side==='back',width=p.width,height=width/(image.naturalWidth/image.naturalHeight);
- if(!item.previewMesh){const texture=makeImageReliefPreviewTexture(image);item.previewMesh=new THREE.Mesh(new THREE.PlaneGeometry(width,height),new THREE.MeshBasicMaterial({map:texture,transparent:true,opacity:.82,depthWrite:false,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:-2}));item.previewMesh.name='Image relief placement preview: '+item.name;item.previewMesh.renderOrder=20;item.previewMesh.userData.previewTexture=texture;scene.add(item.previewMesh);}
- else{item.previewMesh.geometry.dispose();item.previewMesh.geometry=new THREE.PlaneGeometry(width,height);}
+ const texture=makeImageReliefPreviewTexture(image,item.settings.edgeSmooth);
+ if(!item.previewMesh){item.previewMesh=new THREE.Mesh(new THREE.PlaneGeometry(width,height),new THREE.MeshBasicMaterial({map:texture,transparent:true,opacity:.82,depthWrite:false,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:-2}));item.previewMesh.name='Image relief placement preview: '+item.name;item.previewMesh.renderOrder=20;scene.add(item.previewMesh);}
+ else{item.previewMesh.geometry.dispose();item.previewMesh.geometry=new THREE.PlaneGeometry(width,height);item.previewMesh.material.map?.dispose();item.previewMesh.material.map=texture;item.previewMesh.material.needsUpdate=true;}
+ item.previewMesh.userData.previewTexture=texture;
  const localPos=new THREE.Vector3(p.x,p.y,back?box.min.z-.001:box.max.z+.001).multiply(stellaMesh.scale).applyQuaternion(stellaMesh.quaternion).add(stellaMesh.position);
  item.previewMesh.position.copy(localPos);item.previewMesh.quaternion.copy(stellaMesh.quaternion).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0,back?Math.PI:0,p.rotation*Math.PI/180)));
  item.previewMesh.scale.copy(stellaMesh.scale);item.previewMesh.updateMatrixWorld(true);}
@@ -6797,7 +6824,7 @@ function syncReliefWidthFromPercent(){
  const aspect=reliefSourceImage.naturalWidth/reliefSourceImage.naturalHeight;
  reliefWidthInput.value=Math.max(.01,Math.min((box.max.x-box.min.x)*Number(reliefSizeInput.value)/100,(box.max.y-box.min.y)*.68*aspect)).toFixed(3);
 }
-[reliefPosXInput,reliefPosYInput,reliefWidthInput,reliefRotationInput,reliefHeightInput,reliefSizeInput,reliefBlurInput,reliefInvertInput,reliefResolutionInput].forEach(input=>input.addEventListener('input',()=>{updateReliefControls();if(input===reliefSizeInput)syncReliefWidthFromPercent();saveActiveReliefSettings();}));
+[reliefPosXInput,reliefPosYInput,reliefWidthInput,reliefRotationInput,reliefHeightInput,reliefSizeInput,reliefBlurInput,reliefEdgeSmoothInput,reliefInvertInput,reliefResolutionInput].forEach(input=>input.addEventListener('input',()=>{updateReliefControls();if(input===reliefSizeInput)syncReliefWidthFromPercent();saveActiveReliefSettings();}));
 reliefDepthInput.addEventListener('input',()=>{
     const nextDepth=Number(reliefDepthInput.value)||1;
     const currentHeight=Number(reliefHeightInput.value)||0;
@@ -6819,9 +6846,10 @@ function updateReliefControls() {
     document.getElementById('relief-height-value').textContent = Number(reliefHeightInput.value).toFixed(1);
     document.getElementById('relief-size-value').textContent = reliefSizeInput.value;
     document.getElementById('relief-blur-value').textContent = reliefBlurInput.value;
+    document.getElementById('relief-edge-smooth-value').textContent = reliefEdgeSmoothInput.value;
     document.getElementById('relief-resolution-value').textContent = reliefResolutionInput.value;
 }
-[reliefHeightInput, reliefSizeInput, reliefBlurInput, reliefResolutionInput].forEach(input =>
+[reliefHeightInput, reliefSizeInput, reliefBlurInput, reliefEdgeSmoothInput, reliefResolutionInput].forEach(input =>
     input.addEventListener('input', updateReliefControls)
 );
 updateReliefControls();
@@ -6871,7 +6899,7 @@ function prepareImageReliefBVH(geometry) {
     }
 }
 
-function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPercent, blur, invert, resolution, placement = {}, reliefHeightMeters = null) {
+function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPercent, blur, invert, resolution, placement = {}, reliefHeightMeters = null, edgeSmooth = 0) {
     const maxWidth = stoneBox.max.x - stoneBox.min.x;
     const maxHeight = stoneBox.max.y - stoneBox.min.y;
     if (!(maxWidth > 0 && maxHeight > 0)) throw new Error('Не удалось определить размеры лицевой поверхности.');
@@ -6933,10 +6961,15 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
         rgbValues[i * 3] = pixels[p]; rgbValues[i * 3 + 1] = pixels[p + 1]; rgbValues[i * 3 + 2] = pixels[p + 2];
         if (scalar[i] > maxMask) maxMask = scalar[i];
     }
+    const ornamentMode = placement.mode === 'ornament';
+    if (!ornamentMode && Number(edgeSmooth) > 0) {
+        scalar.set(smoothReliefMaskField(scalar, stride, ny + 1, edgeSmooth));
+        maxMask = 0;
+        for (let i = 0; i < scalar.length; i++) if (scalar[i] > maxMask) maxMask = scalar[i];
+    }
     const threshold = 38 / 255;
     if (maxMask <= threshold) throw new Error('Объект не найден: фон занимает всё изображение. Попробуй изображение с более контрастным фоном.');
 
-    const ornamentMode = placement.mode === 'ornament';
     const ornamentDistance = ornamentMode ? new Float32Array(scalar.length) : null;
     let grayLow = 0, grayHigh = 1;
     if (ornamentMode) {
@@ -7294,11 +7327,18 @@ function buildImageReliefSurfaceTest(item) {
     const maskCtx = maskCanvas.getContext('2d');
     const maskData = maskCtx.createImageData(nx+1,ny+1);
     const threshold = 38;
+    const surfaceMask = new Float32Array((nx+1)*(ny+1));
+    for(let y=0;y<=ny;y++)for(let x=0;x<=nx;x++){
+        const k=(y*(nx+1)+x)*4,alpha=px[k+3]/255;
+        const dist=Math.hypot(px[k]-bg[0],px[k+1]-bg[1],px[k+2]-bg[2]);
+        surfaceMask[y*(nx+1)+x]=(x===0||y===0||x===nx||y===ny)?0:(px[k+3]<250?alpha:Math.min(1,dist/255));
+    }
+    if(placement.mode!=='ornament')surfaceMask.set(smoothReliefMaskField(surfaceMask,nx+1,ny+1,itemSettings.edgeSmooth));
     for (let y=0; y<=ny; y++) for (let x=0; x<=nx; x++) {
         const k=(y*(nx+1)+x)*4;
         const alpha=px[k+3]/255;
         const dist=Math.hypot(px[k]-bg[0],px[k+1]-bg[1],px[k+2]-bg[2]);
-        const mask=px[k+3]<250 ? alpha : Math.min(1,dist/255);
+        const mask=surfaceMask[y*(nx+1)+x];
         const gray=(0.2126*px[k]+0.7152*px[k+1]+0.0722*px[k+2])/255;
         const level=itemSettings.invert ? 1-gray : gray;
         const edge=Math.min(x,y,nx-x,ny-y);
@@ -7428,7 +7468,7 @@ document.getElementById('btn-cut-selected-reliefs').addEventListener('click', as
         stellaMesh.geometry.computeBoundingBox();
         for(let i=0;i<chosen.length;i++){
             const item=chosen[i];label.textContent='Подготовка резца '+(i+1)+' из '+chosen.length+': '+item.name;
-            const geometry=buildImageReliefCutterGeometry(item.image,stellaMesh.geometry.boundingBox,item.settings.depth/1000,item.settings.size,item.settings.blur,item.settings.invert,item.settings.resolution,item.settings.placement,(Number.isFinite(Number(item.settings.height))?Number(item.settings.height):Math.max(0,item.settings.depth-1))/1000);
+            const geometry=buildImageReliefCutterGeometry(item.image,stellaMesh.geometry.boundingBox,item.settings.depth/1000,item.settings.size,item.settings.blur,item.settings.invert,item.settings.resolution,item.settings.placement,(Number.isFinite(Number(item.settings.height))?Number(item.settings.height):Math.max(0,item.settings.depth-1))/1000,Number(item.settings.edgeSmooth)||0);
             prepareImageReliefBVH(geometry);
             const cutter=new Brush(geometry);
             // Image cutter must contribute only the rough-cut material.
