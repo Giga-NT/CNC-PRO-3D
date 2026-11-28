@@ -6825,6 +6825,7 @@ function applyReliefSculpt(direction){
     let position=geometry.getAttribute('position');
     if(!position){setStatus('У модели нет доступной геометрии вершин');return;}
     if(!geometry.getAttribute('normal'))geometry.computeVertexNormals();
+    pushUndo();
     const radius=Number(sculptRadiusInput.value)/1000;
     const refined=refineSculptRegionGeometry(geometry,sculptSamples,radius,sculptSide);
     if(refined.geometry!==geometry){
@@ -6840,7 +6841,6 @@ function applyReliefSculpt(direction){
         if(!buckets.has(key))buckets.set(key,[]);
         buckets.get(key).push(sample);
     }
-    pushUndo();
     const amount=Number(sculptAmountInput.value)/1000*direction*sculptSide;
     let changed=0;
     for(let i=0;i<position.count;i++){
@@ -6863,8 +6863,11 @@ function applyReliefSculpt(direction){
         changed++;
     }
     if(!changed){
-        if(geometry!==stellaMesh.geometry)geometry.dispose();
-        const state=undoStack.pop();if(state?.geometry)state.geometry.dispose();
+        const state=undoStack.pop();
+        if(state?.geometry){
+            if(stellaMesh.geometry!==state.geometry)stellaMesh.geometry.dispose();
+            stellaMesh.geometry=state.geometry;
+        }
         document.getElementById('btn-undo').disabled=undoStack.length===0&&assemblyUndoStack.length===0;
         setStatus('В закрашенной зоне не найдена поверхность нужной стороны.');
         return;
