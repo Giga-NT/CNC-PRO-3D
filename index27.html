@@ -767,6 +767,7 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
             <button type="button" id="btn-sculpt-raise" class="success" style="flex:1;">＋ Поднять</button>
             <button type="button" id="btn-sculpt-lower" class="primary" style="flex:1;">－ Утопить</button>
         </div>
+        <button type="button" id="btn-sculpt-smooth" class="primary" style="width:100%;margin-top:5px;">〰️ Загладить поверхность</button>
         <button type="button" id="btn-sculpt-clear" style="width:100%;margin-top:5px;">Очистить выделение</button>
         <div id="sculpt-status" class="import-status">Точка не выбрана</div>
     </div>
@@ -6826,6 +6827,105 @@ function refineSculptRegionGeometry(source, samples, radius, side, pass=0){
     }
     return {geometry:out,refined:splitCount};
 }
+function smoothReliefSculptSurface(){
+    if(!stellaMesh?.geometry||sculptSelectedMesh!==stellaMesh||!sculptSamples.length){
+        setStatus('Сначала закрась область кистью');return;
+    }
+    const geometry=stellaMesh.geometry;
+    const position=geometry.getAttribute('position');
+    if(!position){setStatus('У модели нет доступной геометрии вершин');return;}
+    const radius=Number(sculptRadiusInput.value)/1000;
+    const cell=radius,buckets=new Map();
+    for(const p of sculptSamples){
+        const key=Math.floor(p.x/cell)+','+Math.floor(p.y/cell);
+        if(!buckets.has(key))buckets.set(key,[]);
+        buckets.get(key).push(p);
+    }
+    const nearestAt=(x,y)=>{
+        const gx=Math.floor(x/cell),gy=Math.floor(y/cell);let nearest=Infinity;
+        for(let ox=-1;ox<=1;ox++)for(let oy=-1;oy<=1;oy++){
+            const bucket=buckets.get((gx+ox)+','+(gy+oy));if(!bucket)continue;
+            for(const p of bucket){const d=Math.hypot(x-p.x,y-p.y);if(d<nearest)nearest=d;}
+        }
+        return nearest;
+    };
+    const normals=geometry.getAttribute('normal')|| (geometry.computeVertexNormals(),geometry.getAttribute('normal'));
+    const localIds=new Map(),coords=[],neighbors=[],weights=[];
+    const keyFor=(x,y,z)=>Math.round(x*1e6)+','+Math.round(y*1e6)+','+Math.round(z*1e6);
+    const getLocalId=(index)=>{
+        const x=position.getX(index),y=position.getY(index),z=position.getZ(index);
+        const key=keyFor(x,y,z);
+        let id=localIds.get(key);
+        if(id===undefined){
+            id=coords.length/3;localIds.set(key,id);
+            coords.push(x,y,z);neighbors.push(new Set());
+            const d=nearestAt(x,y);
+            const edge=radius*1.18;
+            const t=Math.max(0,Math.min(1,1-d/edge));
+            weights.push(t*t*(3-2*t));
+        }
+        return id;
+    };
+    const triCount=Math.floor(position.count/3);
+    for(let t=0;t<triCount;t++){
+        const a=t*3,b=a+1,c=a+2;
+        const cx=(position.getX(a)+position.getX(b)+position.getX(c))/3;
+        const cy=(position.getY(a)+position.getY(b)+position.getY(c))/3;
+        if(nearestAt(cx,cy)>radius*1.35)continue;
+        if(normals&&sculptSide*(normals.getZ(a)+normals.getZ(b)+normals.getZ(c))/3<0.2)continue;
+        const ia=getLocalId(a),ib=getLocalId(b),ic=getLocalId(c);
+        neighbors[ia].add(ib);neighbors[ia].add(ic);
+        neighbors[ib].add(ia);neighbors[ib].add(ic);
+        neighbors[ic].add(ia);neighbors[ic].add(ib);
+    }
+    if(!coords.length){setStatus('В выделенной зоне нет подходящей поверхности.');return;}
+    pushUndo();
+    let z= new Float64Array(coords.length/3);
+    for(let i=0;i<z.length;i++)z[i]=coords[i*3+2];
+    const smoothPass=(input,factor)=>{
+        const output=input.slice();
+        for(let i=0;i<input.length;i++){
+            const w=weights[i],list=neighbors[i];
+            if(w<0.015||!list.size)continue;
+            let sum=0;for(const j of list)sum+=input[j];
+            const average=sum/list.size;
+            output[i]=input[i]+(average-input[i])*factor*w;
+        }
+        return output;
+    };
+    for(let pass=0;pass<5;pass++){
+        z=smoothPass(z,0.42);
+        z=smoothPass(z,-0.44);
+    }
+    let changed=0;
+    for(let i=0;i<z.length;i++){
+        const w=weights[i];
+        if(w<0.015)continue;
+        const x=coords[i*3],y=coords[i*3+1];
+        const gx=Math.floor(x/cell),gy=Math.floor(y/cell);
+        for(let ox=-1;ox<=1;ox++)for(let oy=-1;oy<=1;oy++){
+            const bucket=buckets.get((gx+ox)+','+(gy+oy));if(!bucket)continue;
+        }
+        // Welded positions can occur more than once in non-indexed geometry.
+        const oldZ=coords[i*3+2],delta=(z[i]-oldZ)*w;
+        if(Math.abs(delta)<1e-9)continue;
+        const key=keyFor(x,y,oldZ);
+        for(let v=0;v<position.count;v++){
+            if(keyFor(position.getX(v),position.getY(v),position.getZ(v))===key){
+                position.setZ(v,position.getZ(v)+delta);changed++;
+            }
+        }
+    }
+    if(!changed){
+        undoStack.pop();
+        document.getElementById('btn-undo').disabled=undoStack.length===0&&assemblyUndoStack.length===0;
+        setStatus('Поверхность уже достаточно ровная в выбранной зоне.');return;
+    }
+    position.needsUpdate=true;
+    geometry.computeVertexNormals();geometry.computeBoundingBox();geometry.computeBoundingSphere();
+    stellaMesh.castShadow=true;stellaMesh.receiveShadow=true;
+    setStatus('〰️ Поверхность заглажена. Можно повторить операцию или отменить её через Undo.');
+}
 function applyReliefSculpt(direction){
     if(!stellaMesh?.geometry||sculptSelectedMesh!==stellaMesh||!sculptSamples.length){setStatus('Сначала закрась область кистью');return;}
     let geometry=stellaMesh.geometry;
@@ -6891,6 +6991,7 @@ function applyReliefSculpt(direction){
     document.getElementById('sculpt-status').textContent='Область изменена. Можно рисовать следующую.';
     setStatus((direction>0?'＋ Закрашенная область поднята на ':'－ Закрашенная область утоплена на ')+sculptAmountInput.value+' мм. Локально уплотнено треугольников: '+refined.refined+'. Отмена доступна.');
 }
+document.getElementById('btn-sculpt-smooth').addEventListener('click',smoothReliefSculptSurface);
 document.getElementById('btn-sculpt-raise').addEventListener('click',()=>applyReliefSculpt(1));
 document.getElementById('btn-sculpt-lower').addEventListener('click',()=>applyReliefSculpt(-1));
 updateSculptLabels();
