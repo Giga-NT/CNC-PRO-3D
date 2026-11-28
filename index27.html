@@ -753,6 +753,24 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
         </div>
     </div>
 
+    <div class="control-group" id="relief-sculpt-tools">
+        <h3>🖌️ Редактирование готового рельефа</h3>
+        <div class="draw-instructions">Выбери точку на уже вырезанной поверхности, настрой радиус кисти и подними или опусти участок. Края смещения будут плавными.</div>
+        <button type="button" id="btn-sculpt-pick" class="primary" style="width:100%;">🎯 Выбрать участок на модели</button>
+        <label>Радиус кисти: <span class="val" id="sculpt-radius-value">25</span> мм
+            <input type="range" id="sculpt-radius" min="5" max="100" step="1" value="25">
+        </label>
+        <label>Смещение: <span class="val" id="sculpt-amount-value">2</span> мм
+            <input type="range" id="sculpt-amount" min="1" max="5" step="0.5" value="2">
+        </label>
+        <div class="btn-row">
+            <button type="button" id="btn-sculpt-raise" class="success" style="flex:1;">＋ Поднять</button>
+            <button type="button" id="btn-sculpt-lower" class="primary" style="flex:1;">－ Утопить</button>
+        </div>
+        <button type="button" id="btn-sculpt-clear" style="width:100%;margin-top:5px;">Сбросить точку</button>
+        <div id="sculpt-status" class="import-status">Точка не выбрана</div>
+    </div>
+
     <div class="control-group" id="pattern-tools" style="display: none;">
         <h3>🔁 Массив и поворот</h3>
         <div class="draw-instructions">
@@ -6630,6 +6648,71 @@ document.getElementById('btn-export-quote').addEventListener('click', () => {
    ============================================================ */
 
 let raycastEnabled = false;
+let sculptPickMode = false;
+let sculptCenter = null;
+let sculptSide = 1;
+let sculptSelectedMesh = null;
+
+const sculptPickButton = document.getElementById('btn-sculpt-pick');
+const sculptRadiusInput = document.getElementById('sculpt-radius');
+const sculptAmountInput = document.getElementById('sculpt-amount');
+function updateSculptLabels(){
+    document.getElementById('sculpt-radius-value').textContent = sculptRadiusInput.value;
+    document.getElementById('sculpt-amount-value').textContent = sculptAmountInput.value;
+}
+[sculptRadiusInput,sculptAmountInput].forEach(input=>input.addEventListener('input',updateSculptLabels));
+sculptPickButton.addEventListener('click',()=>{
+    if(!stellaMesh){setStatus('Сначала создай или выбери стелу');return;}
+    sculptPickMode=!sculptPickMode;
+    sculptPickButton.classList.toggle('active-tool',sculptPickMode);
+    sculptPickButton.textContent=sculptPickMode?'Нажми на участок рельефа…':'🎯 Выбрать участок на модели';
+    document.getElementById('sculpt-status').textContent=sculptPickMode?'Ожидаю щелчок по поверхности':'Точка не выбрана';
+    setStatus(sculptPickMode?'🎯 Укажи участок на готовом рельефе':'Выбор участка выключен');
+});
+document.getElementById('btn-sculpt-clear').addEventListener('click',()=>{
+    sculptCenter=null;sculptSelectedMesh=null;sculptPickMode=false;
+    sculptPickButton.classList.remove('active-tool');
+    sculptPickButton.textContent='🎯 Выбрать участок на модели';
+    document.getElementById('sculpt-status').textContent='Точка не выбрана';
+});
+function applyReliefSculpt(direction){
+    if(!stellaMesh?.geometry||sculptSelectedMesh!==stellaMesh||!sculptCenter){setStatus('Сначала выбери точку на поверхности');return;}
+    const geometry=stellaMesh.geometry,position=geometry.getAttribute('position');
+    if(!position){setStatus('У модели нет доступной геометрии вершин');return;}
+    const normal=geometry.getAttribute('normal');
+    if(!normal){geometry.computeVertexNormals();}
+    pushUndo();
+    const normals=geometry.getAttribute('normal');
+    const radius=Number(sculptRadiusInput.value)/1000;
+    const amount=Number(sculptAmountInput.value)/1000*direction*sculptSide;
+    let changed=0;
+    for(let i=0;i<position.count;i++){
+        if(normals.getZ(i)*sculptSide<0.35)continue;
+        const dx=position.getX(i)-sculptCenter.x,dy=position.getY(i)-sculptCenter.y;
+        const distance=Math.hypot(dx,dy);
+        if(distance>=radius)continue;
+        const t=distance/radius;
+        const falloff=1-(t*t*(3-2*t));
+        position.setZ(i,position.getZ(i)+amount*falloff);
+        changed++;
+    }
+    if(!changed){
+        const state=undoStack.pop();if(state?.geometry)state.geometry.dispose();
+        document.getElementById('btn-undo').disabled=undoStack.length===0&&assemblyUndoStack.length===0;
+        setStatus('В этом месте не найдена поверхность нужной стороны. Выбери точку ещё раз.');
+        return;
+    }
+    position.needsUpdate=true;
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();geometry.computeBoundingSphere();
+    stellaMesh.geometry=geometry;
+    stellaMesh.castShadow=true;stellaMesh.receiveShadow=true;
+    document.getElementById('sculpt-status').textContent='Участок изменён. Можно выбрать другую точку или отменить действие.';
+    setStatus((direction>0?'＋ Участок поднят на ':'－ Участок утоплен на ')+sculptAmountInput.value+' мм. Отмена доступна.');
+}
+document.getElementById('btn-sculpt-raise').addEventListener('click',()=>applyReliefSculpt(1));
+document.getElementById('btn-sculpt-lower').addEventListener('click',()=>applyReliefSculpt(-1));
+updateSculptLabels();
 
 document.getElementById('chk-raycast').addEventListener('change', e => {
     raycastEnabled = e.target.checked;
@@ -6645,8 +6728,9 @@ document.getElementById('chk-raycast').addEventListener('change', e => {
 });
 
 renderer.domElement.addEventListener('pointerdown', e => {
-    if (!raycastEnabled || !stellaMesh) return;
+    if (!stellaMesh) return;
     if (e.button !== 0) return; // Только ЛКМ
+    if (!raycastEnabled && !sculptPickMode) return;
 
     const rect = renderer.domElement.getBoundingClientRect();
     pointerNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -6658,6 +6742,18 @@ renderer.domElement.addEventListener('pointerdown', e => {
     if (!hits.length) return; // Кликнули мимо модели
 
     const hit = hits[0];
+    if(sculptPickMode){
+        const localPoint=stellaMesh.worldToLocal(hit.point.clone());
+        sculptCenter={x:localPoint.x,y:localPoint.y,z:localPoint.z};
+        sculptSide=hit.face?.normal?.z<0?-1:1;
+        sculptSelectedMesh=stellaMesh;
+        sculptPickMode=false;
+        sculptPickButton.classList.remove('active-tool');
+        sculptPickButton.textContent='🎯 Выбрать другой участок';
+        document.getElementById('sculpt-status').textContent='Точка выбрана. Радиус: '+sculptRadiusInput.value+' мм';
+        setStatus('Точка редактирования выбрана. Теперь нажми «Поднять» или «Утопить».');
+        return;
+    }
     
     // Переводим точку из 3D в локальные координаты модели (учитываем вращение камеры и модели)
     const localPoint = stellaMesh.worldToLocal(hit.point.clone());
