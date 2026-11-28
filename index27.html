@@ -767,7 +767,7 @@ button.preset-btn { font-size: 11px; padding: 5px 8px; }
             <button type="button" id="btn-sculpt-raise" class="success" style="flex:1;">＋ Поднять</button>
             <button type="button" id="btn-sculpt-lower" class="primary" style="flex:1;">－ Утопить</button>
         </div>
-        <button type="button" id="btn-sculpt-smooth" class="primary" style="width:100%;margin-top:5px;">〰️ Загладить поверхность</button>
+        <button type="button" id="btn-sculpt-smooth" class="primary" style="width:100%;margin-top:5px;">🧽 Обработать поверхность</button>
         <button type="button" id="btn-sculpt-clear" style="width:100%;margin-top:5px;">Очистить выделение</button>
         <div id="sculpt-status" class="import-status">Точка не выбрана</div>
     </div>
@@ -6835,89 +6835,124 @@ function smoothReliefSculptSurface(){
     const position=geometry.getAttribute('position');
     if(!position){setStatus('У модели нет доступной геометрии вершин');return;}
     const radius=Number(sculptRadiusInput.value)/1000;
-    const cell=radius,buckets=new Map();
+    const cell=Math.max(radius/35,0.001);
+    const minX=Math.min(...sculptSamples.map(p=>p.x))-radius*1.3;
+    const maxX=Math.max(...sculptSamples.map(p=>p.x))+radius*1.3;
+    const minY=Math.min(...sculptSamples.map(p=>p.y))-radius*1.3;
+    const maxY=Math.max(...sculptSamples.map(p=>p.y))+radius*1.3;
+    const nx=Math.min(160,Math.max(3,Math.ceil((maxX-minX)/cell)+1));
+    const ny=Math.min(160,Math.max(3,Math.ceil((maxY-minY)/cell)+1));
+    const stepX=(maxX-minX)/(nx-1),stepY=(maxY-minY)/(ny-1);
+    const size=nx*ny;
+    const heights=new Float64Array(size),counts=new Uint32Array(size),valid=new Uint8Array(size);
+    const normals=geometry.getAttribute('normal')||(geometry.computeVertexNormals(),geometry.getAttribute('normal'));
+    const buckets=new Map(),bucketSize=radius;
     for(const p of sculptSamples){
-        const key=Math.floor(p.x/cell)+','+Math.floor(p.y/cell);
+        const key=Math.floor(p.x/bucketSize)+','+Math.floor(p.y/bucketSize);
         if(!buckets.has(key))buckets.set(key,[]);
         buckets.get(key).push(p);
     }
     const nearestAt=(x,y)=>{
-        const gx=Math.floor(x/cell),gy=Math.floor(y/cell);let nearest=Infinity;
+        const gx=Math.floor(x/bucketSize),gy=Math.floor(y/bucketSize);let nearest=Infinity;
         for(let ox=-1;ox<=1;ox++)for(let oy=-1;oy<=1;oy++){
-            const bucket=buckets.get((gx+ox)+','+(gy+oy));if(!bucket)continue;
-            for(const p of bucket){const d=Math.hypot(x-p.x,y-p.y);if(d<nearest)nearest=d;}
+            const list=buckets.get((gx+ox)+','+(gy+oy));if(!list)continue;
+            for(const p of list){const d=Math.hypot(x-p.x,y-p.y);if(d<nearest)nearest=d;}
         }
         return nearest;
     };
-    const normals=geometry.getAttribute('normal')|| (geometry.computeVertexNormals(),geometry.getAttribute('normal'));
-    const localIds=new Map(),coords=[],neighbors=[],weights=[],vertexMap=new Map();
-    const keyFor=(x,y,z)=>Math.round(x*1e6)+','+Math.round(y*1e6)+','+Math.round(z*1e6);
-    for(let v=0;v<position.count;v++){const key=keyFor(position.getX(v),position.getY(v),position.getZ(v));if(!vertexMap.has(key))vertexMap.set(key,[]);vertexMap.get(key).push(v);}
-    const getLocalId=(index)=>{
-        const x=position.getX(index),y=position.getY(index),z=position.getZ(index);
-        const key=keyFor(x,y,z);
-        let id=localIds.get(key);
-        if(id===undefined){
-            id=coords.length/3;localIds.set(key,id);
-            coords.push(x,y,z);neighbors.push(new Set());
-            const d=nearestAt(x,y);
-            const edge=radius*1.18;
-            const t=Math.max(0,Math.min(1,1-d/edge));
-            weights.push(t*t*(3-2*t));
-        }
-        return id;
-    };
-    const triCount=Math.floor(position.count/3);
-    for(let t=0;t<triCount;t++){
-        const a=t*3,b=a+1,c=a+2;
-        const cx=(position.getX(a)+position.getX(b)+position.getX(c))/3;
-        const cy=(position.getY(a)+position.getY(b)+position.getY(c))/3;
-        if(nearestAt(cx,cy)>radius*1.35)continue;
-        if(normals&&sculptSide*(normals.getZ(a)+normals.getZ(b)+normals.getZ(c))/3<0.2)continue;
-        const ia=getLocalId(a),ib=getLocalId(b),ic=getLocalId(c);
-        neighbors[ia].add(ib);neighbors[ia].add(ic);
-        neighbors[ib].add(ia);neighbors[ib].add(ic);
-        neighbors[ic].add(ia);neighbors[ic].add(ib);
+    const vertexWeights=new Float32Array(position.count);
+    let sampled=0;
+    for(let i=0;i<position.count;i++){
+        if(normals&&normals.getZ(i)*sculptSide<0.25)continue;
+        const x=position.getX(i),y=position.getY(i),d=nearestAt(x,y);
+        if(d>radius*1.25)continue;
+        const gx=Math.max(0,Math.min(nx-1,Math.round((x-minX)/stepX)));
+        const gy=Math.max(0,Math.min(ny-1,Math.round((y-minY)/stepY)));
+        const k=gy*nx+gx;
+        heights[k]+=position.getZ(i);counts[k]++;valid[k]=1;
+        const t=Math.max(0,Math.min(1,1-d/(radius*1.18)));
+        vertexWeights[i]=t*t*(3-2*t);
+        sampled++;
     }
-    if(!coords.length){setStatus('В выделенной зоне нет подходящей поверхности.');return;}
+    if(!sampled){setStatus('Не удалось построить локальную карту поверхности');return;}
+    for(let k=0;k<size;k++)if(counts[k])heights[k]/=counts[k];
+    // Заполняем пустые ячейки соседними значениями, не выходя за локальную область.
+    for(let pass=0;pass<8;pass++){
+        const next=heights.slice(),nextValid=valid.slice();let filled=0;
+        for(let y=1;y<ny-1;y++)for(let x=1;x<nx-1;x++){
+            const k=y*nx+x;if(valid[k])continue;
+            let sum=0,n=0;
+            for(let oy=-1;oy<=1;oy++)for(let ox=-1;ox<=1;ox++){
+                if(!ox&&!oy)continue;const q=(y+oy)*nx+x+ox;
+                if(valid[q]){sum+=heights[q];n++;}
+            }
+            if(n){next[k]=sum/n;nextValid[k]=1;filled++;}
+        }
+        heights.set(next);valid.set(nextValid);
+        if(!filled)break;
+    }
+    const morph=(src,mode)=>{
+        const out=src.slice();
+        for(let y=1;y<ny-1;y++)for(let x=1;x<nx-1;x++){
+            const k=y*nx+x;if(!valid[k])continue;
+            let value=mode==='max'?-Infinity:Infinity;
+            for(let oy=-1;oy<=1;oy++)for(let ox=-1;ox<=1;ox++){
+                const q=(y+oy)*nx+x+ox;if(!valid[q])continue;
+                value=mode==='max'?Math.max(value,src[q]):Math.min(value,src[q]);
+            }
+            if(Number.isFinite(value))out[k]=value;
+        }
+        return out;
+    };
+    // Morphological closing fills small pits; opening removes small spikes.
+    const closed=morph(morph(heights,'max'),'min');
+    const opened=morph(morph(heights,'min'),'max');
+    let target=new Float64Array(size);
+    for(let k=0;k<size;k++)target[k]=heights[k]*0.55+closed[k]*0.25+opened[k]*0.20;
+    // Edge-aware local smoothing: large height changes contribute less.
+    for(let pass=0;pass<3;pass++){
+        const out=target.slice();
+        for(let y=1;y<ny-1;y++)for(let x=1;x<nx-1;x++){
+            const k=y*nx+x;if(!valid[k])continue;
+            let sum=0,ws=0;const center=target[k];
+            for(let oy=-1;oy<=1;oy++)for(let ox=-1;ox<=1;ox++){
+                if(!ox&&!oy)continue;const q=(y+oy)*nx+x+ox;if(!valid[q])continue;
+                const diff=Math.abs(target[q]-center);
+                const w=1/(1+diff/Math.max(radius*0.035,0.00015));
+                sum+=target[q]*w;ws+=w;
+            }
+            if(ws)out[k]=center+(sum/ws-center)*0.32;
+        }
+        target=out;
+    }
+    const sampleGrid=(x,y)=>{
+        const fx=Math.max(0,Math.min(nx-1,(x-minX)/stepX));
+        const fy=Math.max(0,Math.min(ny-1,(y-minY)/stepY));
+        const x0=Math.floor(fx),y0=Math.floor(fy),x1=Math.min(nx-1,x0+1),y1=Math.min(ny-1,y0+1);
+        const tx=fx-x0,ty=fy-y0;
+        const a=target[y0*nx+x0],b=target[y0*nx+x1],c=target[y1*nx+x0],d=target[y1*nx+x1];
+        return (a*(1-tx)+b*tx)*(1-ty)+(c*(1-tx)+d*tx)*ty;
+    };
     pushUndo();
-    let z= new Float64Array(coords.length/3);
-    for(let i=0;i<z.length;i++)z[i]=coords[i*3+2];
-    const smoothPass=(input,factor)=>{
-        const output=input.slice();
-        for(let i=0;i<input.length;i++){
-            const w=weights[i],list=neighbors[i];
-            if(w<0.015||!list.size)continue;
-            let sum=0;for(const j of list)sum+=input[j];
-            const average=sum/list.size;
-            output[i]=input[i]+(average-input[i])*factor*w;
-        }
-        return output;
-    };
-    for(let pass=0;pass<5;pass++){
-        z=smoothPass(z,0.42);
-        z=smoothPass(z,-0.44);
-    }
     let changed=0;
-    for(let i=0;i<z.length;i++){
-        const w=weights[i];
-        if(w<0.015)continue;
-        const x=coords[i*3],y=coords[i*3+1];
-        // Weld coincident vertices in non-indexed geometry through a prebuilt lookup.
-        const oldZ=coords[i*3+2],delta=(z[i]-oldZ)*w;
-        if(Math.abs(delta)<1e-9)continue;
-        const indices=vertexMap.get(keyFor(x,y,oldZ))||[];
-        for(const v of indices){position.setZ(v,position.getZ(v)+delta);changed++;}
+    for(let i=0;i<position.count;i++){
+        const w=vertexWeights[i];if(w<0.01)continue;
+        const x=position.getX(i),y=position.getY(i),oldZ=position.getZ(i);
+        const nextZ=sampleGrid(x,y);
+        // Conservative blend: first test pass must remove noise without flattening the relief.
+        const delta=(nextZ-oldZ)*w*0.55;
+        if(Math.abs(delta)<1e-8)continue;
+        position.setZ(i,oldZ+delta);changed++;
     }
     if(!changed){
         undoStack.pop();
         document.getElementById('btn-undo').disabled=undoStack.length===0&&assemblyUndoStack.length===0;
-        setStatus('Поверхность уже достаточно ровная в выбранной зоне.');return;
+        setStatus('В этой области не найдено неровностей для обработки.');return;
     }
     position.needsUpdate=true;
     geometry.computeVertexNormals();geometry.computeBoundingBox();geometry.computeBoundingSphere();
     stellaMesh.castShadow=true;stellaMesh.receiveShadow=true;
-    setStatus('〰️ Поверхность заглажена. Можно повторить операцию или отменить её через Undo.');
+    setStatus('Локальная обработка завершена: заполнение впадин + удаление бугров + бережная полировка. Изменено вершин: '+changed+'. Можно отменить через Undo.');
 }
 function applyReliefSculpt(direction){
     if(!stellaMesh?.geometry||sculptSelectedMesh!==stellaMesh||!sculptSamples.length){setStatus('Сначала закрась область кистью');return;}
