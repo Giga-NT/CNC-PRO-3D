@@ -6743,13 +6743,115 @@ document.getElementById('btn-sculpt-clear').addEventListener('click',()=>{
     sculptPickButton.textContent='🖌️ Рисовать область';
     document.getElementById('sculpt-status').textContent='Область не выделена';
 });
+function refineSculptRegionGeometry(source, samples, radius, side){
+    // One adaptive subdivision pass, restricted to triangles touched by the brush.
+    // The rest of the model is copied without changing its topology or material slots.
+    let geometry=source;
+    let temporary=null;
+    if(geometry.index){temporary=geometry.toNonIndexed();geometry=temporary;}
+    const pos=geometry.getAttribute('position');
+    if(!pos||pos.count<3){if(temporary)temporary.dispose();return {geometry:source,refined:0};}
+    const attrs=Object.entries(geometry.attributes);
+    if(!attrs.length){if(temporary)temporary.dispose();return {geometry:source,refined:0};}
+    const groups=geometry.groups?.length?geometry.groups:[{start:0,count:pos.count,materialIndex:0}];
+    const triCount=Math.floor(pos.count/3);
+    const materialForTri=new Uint32Array(triCount);
+    for(const g of groups){
+        const first=Math.max(0,Math.floor(g.start/3));
+        const last=Math.min(triCount,Math.ceil((g.start+g.count)/3));
+        for(let t=first;t<last;t++)materialForTri[t]=g.materialIndex||0;
+    }
+    const cell=radius;
+    const buckets=new Map();
+    for(const p of samples){
+        const key=Math.floor(p.x/cell)+','+Math.floor(p.y/cell);
+        if(!buckets.has(key))buckets.set(key,[]);
+        buckets.get(key).push(p);
+    }
+    const nearestAt=(x,y)=>{
+        const gx=Math.floor(x/cell),gy=Math.floor(y/cell);
+        let nearest=Infinity;
+        for(let ox=-1;ox<=1;ox++)for(let oy=-1;oy<=1;oy++){
+            const bucket=buckets.get((gx+ox)+','+(gy+oy));
+            if(!bucket)continue;
+            for(const p of bucket){const d=Math.hypot(x-p.x,y-p.y);if(d<nearest)nearest=d;}
+        }
+        return nearest;
+    };
+    const maxSplits=60000;
+    const targetEdge=Math.max(radius*0.32,0.004);
+    const splitFlags=new Uint8Array(triCount);
+    let splitCount=0;
+    for(let t=0;t<triCount;t++){
+        const a=t*3,b=a+1,c=a+2;
+        const cx=(pos.getX(a)+pos.getX(b)+pos.getX(c))/3;
+        const cy=(pos.getY(a)+pos.getY(b)+pos.getY(c))/3;
+        if(nearestAt(cx,cy)>radius*0.85)continue;
+        if(side*(geometry.getAttribute('normal')?.getZ(a)??side)<0.2)continue;
+        const ab=Math.hypot(pos.getX(a)-pos.getX(b),pos.getY(a)-pos.getY(b),pos.getZ(a)-pos.getZ(b));
+        const bc=Math.hypot(pos.getX(b)-pos.getX(c),pos.getY(b)-pos.getY(c),pos.getZ(b)-pos.getZ(c));
+        const ca=Math.hypot(pos.getX(c)-pos.getX(a),pos.getY(c)-pos.getY(a),pos.getZ(c)-pos.getZ(a));
+        if(Math.max(ab,bc,ca)>targetEdge){splitFlags[t]=1;splitCount++;if(splitCount>=maxSplits)break;}
+    }
+    if(!splitCount){if(temporary)temporary.dispose();return {geometry:source,refined:0};}
+    const out=new THREE.BufferGeometry();
+    const outArrays={};
+    const outputVertices=pos.count+splitCount*9;
+    for(const [name,attr] of attrs)outArrays[name]=new attr.array.constructor(outputVertices*attr.itemSize);
+    const writeVertex=(dst,srcA,srcB=null)=>{
+        for(const [name,attr] of attrs){
+            const target=outArrays[name],data=attr.array,size=attr.itemSize;
+            const offset=dst*size,oa=srcA*size;
+            if(srcB===null){for(let k=0;k<size;k++)target[offset+k]=data[oa+k];}
+            else{const ob=srcB*size;for(let k=0;k<size;k++)target[offset+k]=(data[oa+k]+data[ob+k])*0.5;}
+        }
+    };
+    let cursor=0,lastMaterial=null,groupStart=0;
+    const addTri=(a,b,c,material)=>{
+        if(lastMaterial===null){lastMaterial=material;groupStart=cursor;}
+        else if(material!==lastMaterial){out.addGroup(groupStart,cursor-groupStart,lastMaterial);groupStart=cursor;lastMaterial=material;}
+        writeVertex(cursor++,a);writeVertex(cursor++,b);writeVertex(cursor++,c);
+    };
+    for(let t=0;t<triCount;t++){
+        const a=t*3,b=a+1,c=a+2,mat=materialForTri[t];
+        if(!splitFlags[t]){addTri(a,b,c,mat);continue;}
+        // Midpoints are interpolated for every existing vertex attribute.
+        const base=cursor;
+        for(const [name,attr] of attrs){
+            const target=outArrays[name],data=attr.array,size=attr.itemSize;
+            const putMid=(dst,v1,v2)=>{for(let k=0;k<size;k++)target[dst*size+k]=(data[v1*size+k]+data[v2*size+k])*0.5;};
+            putMid(base+3,a,b);putMid(base+4,b,c);putMid(base+5,c,a);
+        }
+        writeVertex(base,a);writeVertex(base+1,b);writeVertex(base+2,c);
+        // Emit four triangles using the three newly interpolated edge points.
+        addTri(base,base+3,base+5,mat);
+        addTri(base+3,base+1,base+4,mat);
+        addTri(base+5,base+4,base+2,mat);
+        addTri(base+3,base+4,base+5,mat);
+        // addTri copied original indices; overwrite the three midpoint slots with interpolated values.
+        // Their positions are already written in the preallocated output buffer.
+    }
+    if(lastMaterial!==null)out.addGroup(groupStart,cursor-groupStart,lastMaterial);
+    for(const [name,attr] of attrs)out.setAttribute(name,new THREE.BufferAttribute(outArrays[name].subarray(0,cursor*attr.itemSize),attr.itemSize,attr.normalized));
+    if(geometry.boundingBox)out.boundingBox=geometry.boundingBox.clone();
+    if(geometry.boundingSphere)out.boundingSphere=geometry.boundingSphere.clone();
+    if(temporary)temporary.dispose();
+    return {geometry:out,refined:splitCount};
+}
 function applyReliefSculpt(direction){
     if(!stellaMesh?.geometry||sculptSelectedMesh!==stellaMesh||!sculptSamples.length){setStatus('Сначала закрась область кистью');return;}
-    const geometry=stellaMesh.geometry,position=geometry.getAttribute('position');
+    let geometry=stellaMesh.geometry;
+    let position=geometry.getAttribute('position');
     if(!position){setStatus('У модели нет доступной геометрии вершин');return;}
     if(!geometry.getAttribute('normal'))geometry.computeVertexNormals();
-    const normals=geometry.getAttribute('normal');
     const radius=Number(sculptRadiusInput.value)/1000;
+    const refined=refineSculptRegionGeometry(geometry,sculptSamples,radius,sculptSide);
+    if(refined.geometry!==geometry){
+        geometry=refined.geometry;
+        position=geometry.getAttribute('position');
+        stellaMesh.geometry=geometry;
+    }
+    const normals=geometry.getAttribute('normal')|| (geometry.computeVertexNormals(),geometry.getAttribute('normal'));
     const cell=radius;
     const buckets=new Map();
     for(const sample of sculptSamples){
@@ -6780,6 +6882,7 @@ function applyReliefSculpt(direction){
         changed++;
     }
     if(!changed){
+        if(geometry!==stellaMesh.geometry)geometry.dispose();
         const state=undoStack.pop();if(state?.geometry)state.geometry.dispose();
         document.getElementById('btn-undo').disabled=undoStack.length===0&&assemblyUndoStack.length===0;
         setStatus('В закрашенной зоне не найдена поверхность нужной стороны.');
@@ -6795,7 +6898,7 @@ function applyReliefSculpt(direction){
     sculptPickButton.classList.remove('active-tool');
     sculptPickButton.textContent='🖌️ Рисовать область';
     document.getElementById('sculpt-status').textContent='Область изменена. Можно рисовать следующую.';
-    setStatus((direction>0?'＋ Закрашенная область поднята на ':'－ Закрашенная область утоплена на ')+sculptAmountInput.value+' мм. Отмена доступна.');
+    setStatus((direction>0?'＋ Закрашенная область поднята на ':'－ Закрашенная область утоплена на ')+sculptAmountInput.value+' мм. Локально уплотнено треугольников: '+refined.refined+'. Отмена доступна.');
 }
 document.getElementById('btn-sculpt-raise').addEventListener('click',()=>applyReliefSculpt(1));
 document.getElementById('btn-sculpt-lower').addEventListener('click',()=>applyReliefSculpt(-1));
