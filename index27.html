@@ -6972,7 +6972,7 @@ function buildImageReliefCutterGeometry(image, stoneBox, depthMeters, widthPerce
         rgbValues[i * 3] = pixels[p]; rgbValues[i * 3 + 1] = pixels[p + 1]; rgbValues[i * 3 + 2] = pixels[p + 2];
         if (scalar[i] > maxMask) maxMask = scalar[i];
     }
-    const stageSettings=getMultiStageReliefSettings(multiStageSettings);
+    const stageSettings=multiStageSettings?.enabled?multiStageSettings:getMultiStageReliefSettings(multiStageSettings);
     if(stageSettings.enabled){
         grayValues.set(applyMultiStageReliefMap(grayValues,nx,ny,width,stageSettings));
         log('[RELIEF MULTI-STAGE] rough='+stageSettings.roughMm+'mm; finish='+stageSettings.finishMm+'mm; detail='+stageSettings.detailMm+'mm; grid='+nx+'x'+ny);
