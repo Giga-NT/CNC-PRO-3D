@@ -6744,92 +6744,73 @@ document.getElementById('btn-sculpt-clear').addEventListener('click',()=>{
     document.getElementById('sculpt-status').textContent='Область не выделена';
 });
 function refineSculptRegionGeometry(source, samples, radius, side){
-    // One adaptive subdivision pass, restricted to triangles touched by the brush.
-    // The rest of the model is copied without changing its topology or material slots.
     let geometry=source;
     let temporary=null;
     if(geometry.index){temporary=geometry.toNonIndexed();geometry=temporary;}
     const pos=geometry.getAttribute('position');
     if(!pos||pos.count<3){if(temporary)temporary.dispose();return {geometry:source,refined:0};}
     const attrs=Object.entries(geometry.attributes);
-    if(!attrs.length){if(temporary)temporary.dispose();return {geometry:source,refined:0};}
-    const groups=geometry.groups?.length?geometry.groups:[{start:0,count:pos.count,materialIndex:0}];
     const triCount=Math.floor(pos.count/3);
+    const groups=geometry.groups?.length?geometry.groups:[{start:0,count:pos.count,materialIndex:0}];
     const materialForTri=new Uint32Array(triCount);
     for(const g of groups){
         const first=Math.max(0,Math.floor(g.start/3));
         const last=Math.min(triCount,Math.ceil((g.start+g.count)/3));
         for(let t=first;t<last;t++)materialForTri[t]=g.materialIndex||0;
     }
-    const cell=radius;
-    const buckets=new Map();
+    const cell=radius,buckets=new Map();
     for(const p of samples){
         const key=Math.floor(p.x/cell)+','+Math.floor(p.y/cell);
         if(!buckets.has(key))buckets.set(key,[]);
         buckets.get(key).push(p);
     }
     const nearestAt=(x,y)=>{
-        const gx=Math.floor(x/cell),gy=Math.floor(y/cell);
-        let nearest=Infinity;
+        const gx=Math.floor(x/cell),gy=Math.floor(y/cell);let nearest=Infinity;
         for(let ox=-1;ox<=1;ox++)for(let oy=-1;oy<=1;oy++){
-            const bucket=buckets.get((gx+ox)+','+(gy+oy));
-            if(!bucket)continue;
+            const bucket=buckets.get((gx+ox)+','+(gy+oy));if(!bucket)continue;
             for(const p of bucket){const d=Math.hypot(x-p.x,y-p.y);if(d<nearest)nearest=d;}
         }
         return nearest;
     };
-    const maxSplits=60000;
-    const targetEdge=Math.max(radius*0.32,0.004);
-    const splitFlags=new Uint8Array(triCount);
-    let splitCount=0;
+    const maxSplits=60000,targetEdge=Math.max(radius*0.32,0.004);
+    const splitFlags=new Uint8Array(triCount);let splitCount=0;
+    const normals=geometry.getAttribute('normal');
     for(let t=0;t<triCount;t++){
         const a=t*3,b=a+1,c=a+2;
         const cx=(pos.getX(a)+pos.getX(b)+pos.getX(c))/3;
         const cy=(pos.getY(a)+pos.getY(b)+pos.getY(c))/3;
         if(nearestAt(cx,cy)>radius*0.85)continue;
-        if(side*(geometry.getAttribute('normal')?.getZ(a)??side)<0.2)continue;
+        if(normals&&side*(normals.getZ(a)+normals.getZ(b)+normals.getZ(c))/3<0.2)continue;
         const ab=Math.hypot(pos.getX(a)-pos.getX(b),pos.getY(a)-pos.getY(b),pos.getZ(a)-pos.getZ(b));
         const bc=Math.hypot(pos.getX(b)-pos.getX(c),pos.getY(b)-pos.getY(c),pos.getZ(b)-pos.getZ(c));
         const ca=Math.hypot(pos.getX(c)-pos.getX(a),pos.getY(c)-pos.getY(a),pos.getZ(c)-pos.getZ(a));
-        if(Math.max(ab,bc,ca)>targetEdge){splitFlags[t]=1;splitCount++;if(splitCount>=maxSplits)break;}
+        if(Math.max(ab,bc,ca)>targetEdge){splitFlags[t]=1;if(++splitCount>=maxSplits)break;}
     }
     if(!splitCount){if(temporary)temporary.dispose();return {geometry:source,refined:0};}
-    const out=new THREE.BufferGeometry();
-    const outArrays={};
-    const outputVertices=pos.count+splitCount*9;
+    const outputVertices=pos.count+splitCount*9,outArrays={};
     for(const [name,attr] of attrs)outArrays[name]=new attr.array.constructor(outputVertices*attr.itemSize);
-    const writeVertex=(dst,srcA,srcB=null)=>{
+    let cursor=0,lastMaterial=null,groupStart=0;
+    const writeDesc=(dst,desc)=>{
         for(const [name,attr] of attrs){
-            const target=outArrays[name],data=attr.array,size=attr.itemSize;
-            const offset=dst*size,oa=srcA*size;
-            if(srcB===null){for(let k=0;k<size;k++)target[offset+k]=data[oa+k];}
-            else{const ob=srcB*size;for(let k=0;k<size;k++)target[offset+k]=(data[oa+k]+data[ob+k])*0.5;}
+            const target=outArrays[name],data=attr.array,size=attr.itemSize,off=dst*size;
+            if(typeof desc==='number'){const src=desc*size;for(let k=0;k<size;k++)target[off+k]=data[src+k];}
+            else{const [u,v]=desc,ou=u*size,ov=v*size;for(let k=0;k<size;k++)target[off+k]=(data[ou+k]+data[ov+k])*0.5;}
         }
     };
-    let cursor=0,lastMaterial=null,groupStart=0;
-    const addTri=(a,b,c,material)=>{
+    const emitTri=(da,db,dc,material)=>{
         if(lastMaterial===null){lastMaterial=material;groupStart=cursor;}
         else if(material!==lastMaterial){out.addGroup(groupStart,cursor-groupStart,lastMaterial);groupStart=cursor;lastMaterial=material;}
-        writeVertex(cursor++,a);writeVertex(cursor++,b);writeVertex(cursor++,c);
+        writeDesc(cursor++,da);writeDesc(cursor++,db);writeDesc(cursor++,dc);
     };
+    const out=new THREE.BufferGeometry();
     for(let t=0;t<triCount;t++){
         const a=t*3,b=a+1,c=a+2,mat=materialForTri[t];
-        if(!splitFlags[t]){addTri(a,b,c,mat);continue;}
-        // Midpoints are interpolated for every existing vertex attribute.
-        const base=cursor;
-        for(const [name,attr] of attrs){
-            const target=outArrays[name],data=attr.array,size=attr.itemSize;
-            const putMid=(dst,v1,v2)=>{for(let k=0;k<size;k++)target[dst*size+k]=(data[v1*size+k]+data[v2*size+k])*0.5;};
-            putMid(base+3,a,b);putMid(base+4,b,c);putMid(base+5,c,a);
-        }
-        writeVertex(base,a);writeVertex(base+1,b);writeVertex(base+2,c);
-        // Emit four triangles using the three newly interpolated edge points.
-        addTri(base,base+3,base+5,mat);
-        addTri(base+3,base+1,base+4,mat);
-        addTri(base+5,base+4,base+2,mat);
-        addTri(base+3,base+4,base+5,mat);
-        // addTri copied original indices; overwrite the three midpoint slots with interpolated values.
-        // Their positions are already written in the preallocated output buffer.
+        if(!splitFlags[t]){emitTri(a,b,c,mat);continue;}
+        const ab=[a,b],bc=[b,c],ca=[c,a];
+        emitTri(a,ab,ca,mat);
+        emitTri(ab,b,bc,mat);
+        emitTri(ca,bc,c,mat);
+        emitTri(ab,bc,ca,mat);
     }
     if(lastMaterial!==null)out.addGroup(groupStart,cursor-groupStart,lastMaterial);
     for(const [name,attr] of attrs)out.setAttribute(name,new THREE.BufferAttribute(outArrays[name].subarray(0,cursor*attr.itemSize),attr.itemSize,attr.normalized));
